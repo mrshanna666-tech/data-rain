@@ -664,6 +664,7 @@ function RainCurveEditor({
 export default function RainExperience() {
   const hostRef = useRef<HTMLDivElement>(null);
   const audioRef = useRef<RainAudioController | null>(null);
+  const soundWantedRef = useRef(true);
   const axisGroupRef = useRef<THREE.Group | null>(null);
   const resetViewRef = useRef<(() => void) | null>(null);
   const viewStateRef = useRef<{ position: number[]; target: number[]; autoRotate: boolean } | null>(null);
@@ -693,19 +694,41 @@ export default function RainExperience() {
     return () => audioRef.current?.stop();
   }, []);
 
+  useEffect(() => {
+    soundWantedRef.current = window.localStorage.getItem("data-rain-sound") !== "off";
+    const unlockAmbientRain = async (event: PointerEvent) => {
+      if (!soundWantedRef.current) return;
+      if ((event.target as Element | null)?.closest(".sound-trigger")) return;
+      if (!audioRef.current) {
+        audioRef.current = createRainAudio();
+        audioRef.current.setLevel(average / 12);
+      }
+      await audioRef.current.context.resume();
+      setSoundOn(true);
+    };
+    window.addEventListener("pointerdown", unlockAmbientRain);
+    return () => window.removeEventListener("pointerdown", unlockAmbientRain);
+  }, []);
+
   const toggleSound = async () => {
     if (!audioRef.current) {
       audioRef.current = createRainAudio();
       audioRef.current.setLevel(average / 12);
       await audioRef.current.context.resume();
+      soundWantedRef.current = true;
+      window.localStorage.setItem("data-rain-sound", "on");
       setSoundOn(true);
       return;
     }
     if (audioRef.current.context.state === "running") {
       await audioRef.current.context.suspend();
+      soundWantedRef.current = false;
+      window.localStorage.setItem("data-rain-sound", "off");
       setSoundOn(false);
     } else {
       await audioRef.current.context.resume();
+      soundWantedRef.current = true;
+      window.localStorage.setItem("data-rain-sound", "on");
       setSoundOn(true);
     }
   };
