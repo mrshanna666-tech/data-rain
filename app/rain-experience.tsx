@@ -6,6 +6,7 @@ import { EffectComposer } from "three/examples/jsm/postprocessing/EffectComposer
 import { RenderPass } from "three/examples/jsm/postprocessing/RenderPass.js";
 import { UnrealBloomPass } from "three/examples/jsm/postprocessing/UnrealBloomPass.js";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
+import { GPUComputationRenderer } from "three/examples/jsm/misc/GPUComputationRenderer.js";
 
 const initialRainfall = [
   2.1, 3.8, 9.9, 11.9, 0.0, 1.4, 0.7, 0.6, 4.1, 7.8, 6.6, 2.4,
@@ -62,87 +63,92 @@ const rainFragmentShader = /* glsl */ `
 `;
 
 const floorVertexShader = /* glsl */ `
-  uniform float uTime;
-  uniform vec2 uMouseWorld;
-  uniform float uMouseForce;
-  uniform vec3 uRipples[4];
+  uniform sampler2D heightmap;
+  uniform vec2 uTexel;
   varying vec3 vWorld;
-
-  float clickWave(vec2 p) {
-    float wave = 0.0;
-    for (int i = 0; i < 4; i++) {
-      float life = uTime - uRipples[i].z;
-      float enabled = step(0.0, life) * (1.0 - step(2.2, life));
-      float d = length(p - uRipples[i].xy);
-      float radius = life * 2.15;
-      wave += sin((d - radius) * 17.0)
-        * exp(-abs(d - radius) * 3.8)
-        * exp(-life * 1.2)
-        * enabled;
-    }
-    return wave;
-  }
+  varying vec2 vUv;
+  varying vec3 vNormal;
 
   void main() {
     vec4 world = modelMatrix * vec4(position, 1.0);
-    float strip = smoothstep(3.8, 2.7, abs(world.z));
-    float micro = sin(world.x * 3.7 + uTime * 2.2)
-      * sin(world.z * 4.4 - uTime * 1.7) * 0.004;
-    float mouseD = length(world.xz - uMouseWorld);
-    float mouseWave = sin(mouseD * 9.0 - uTime * 5.0)
-      * exp(-mouseD * 1.8) * uMouseForce * 0.012;
-    world.y += (clickWave(world.xz) * 0.065 + micro + mouseWave) * strip;
+    float height = texture2D(heightmap, uv).x;
+    float left = texture2D(heightmap, uv - vec2(uTexel.x, 0.0)).x;
+    float right = texture2D(heightmap, uv + vec2(uTexel.x, 0.0)).x;
+    float down = texture2D(heightmap, uv - vec2(0.0, uTexel.y)).x;
+    float up = texture2D(heightmap, uv + vec2(0.0, uTexel.y)).x;
+    world.y += height;
+    vNormal = normalize(vec3((left - right) * 4.8, 1.0, (down - up) * 4.8));
     vWorld = world.xyz;
+    vUv = uv;
     gl_Position = projectionMatrix * viewMatrix * world;
   }
 `;
 
 const floorFragmentShader = /* glsl */ `
-  uniform float uTime;
-  uniform vec2 uMouseWorld;
-  uniform float uMouseForce;
-  uniform vec3 uRipples[4];
   varying vec3 vWorld;
+  varying vec2 vUv;
+  varying vec3 vNormal;
+
+  void main() {
+    vec2 p = vWorld.xz;
+    float strip = smoothstep(3.8, 2.7, abs(p.y));
+    vec3 normal = normalize(vNormal);
+    vec3 viewDirection = normalize(cameraPosition - vWorld);
+    vec3 lightDirection = normalize(vec3(-0.42, 1.0, 0.38));
+    float fresnel = pow(1.0 - max(dot(normal, viewDirection), 0.0), 3.2);
+    float specular = pow(max(dot(reflect(-lightDirection, normal), viewDirection), 0.0), 46.0);
+    float slope = clamp(length(normal.xz) * 4.2, 0.0, 1.0);
+    float edgeFade = smoothstep(0.0, 0.08, vUv.x)
+      * smoothstep(0.0, 0.08, 1.0 - vUv.x)
+      * smoothstep(0.0, 0.12, vUv.y)
+      * smoothstep(0.0, 0.12, 1.0 - vUv.y);
+    vec3 base = vec3(0.0006, 0.0011, 0.0015);
+    vec3 color = base;
+    color += vec3(0.018, 0.026, 0.031) * fresnel * strip;
+    color += vec3(0.18, 0.23, 0.25) * specular * strip;
+    color += vec3(0.045, 0.062, 0.070) * slope * strip;
+    color *= edgeFade;
+    gl_FragColor = vec4(color, 1.0);
+  }
+`;
+
+const waterComputeShader = /* glsl */ `
+  uniform vec2 mousePos;
+  uniform float mouseStrength;
+  uniform float uTime;
+  uniform float rainfall[24];
 
   float hash(vec2 p) {
     return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453123);
   }
 
   void main() {
-    vec2 p = vWorld.xz;
-    float strip = smoothstep(3.8, 2.7, abs(p.y));
-    vec2 cell = floor(vec2((p.x + 13.0) * 1.4, (p.y + 3.0) * 1.7));
-    float rnd = hash(cell);
-    float life = fract(uTime * (0.18 + rnd * 0.08) + rnd);
-    vec2 center = vec2(
-      (cell.x + hash(cell + 2.4)) / 1.4 - 13.0,
-      (cell.y + hash(cell + 7.1)) / 1.7 - 3.0
-    );
-    float d = length(p - center);
-    float ring = smoothstep(0.045, 0.0, abs(d - life * 0.52))
-      * pow(1.0 - life, 1.5) * step(0.68, rnd) * strip;
-    float secondary = smoothstep(0.035, 0.0, abs(d - life * 0.31))
-      * pow(1.0 - life, 2.0) * step(0.76, rnd) * strip;
-    float interactive = 0.0;
-    for (int i = 0; i < 4; i++) {
-      float rippleLife = uTime - uRipples[i].z;
-      float enabled = step(0.0, rippleLife) * (1.0 - step(2.2, rippleLife));
-      float rippleRadius = rippleLife * 2.15;
-      float rippleDistance = length(p - uRipples[i].xy);
-      float primaryRing = smoothstep(0.085, 0.0, abs(rippleDistance - rippleRadius));
-      float echoRing = smoothstep(0.055, 0.0, abs(rippleDistance - rippleRadius * 0.68));
-      interactive += (primaryRing + echoRing * 0.38) * exp(-rippleLife * 1.25) * enabled;
-    }
-    float mouseDistance = length(p - uMouseWorld);
-    float mouseWake = smoothstep(0.075, 0.0, abs(mouseDistance - 0.82))
-      * uMouseForce * 0.28 * strip;
-    float wet = strip * (0.35 + 0.65 * hash(floor(p * vec2(0.38, 1.8))));
-    vec3 base = vec3(0.0005, 0.0010, 0.0014);
-    vec3 color = base + vec3(0.018, 0.024, 0.028) * wet;
-    color += vec3(0.10, 0.135, 0.15) * (ring + secondary * 0.45);
-    color += vec3(0.16, 0.22, 0.25) * interactive;
-    color += vec3(0.055, 0.085, 0.10) * mouseWake;
-    gl_FragColor = vec4(color, 1.0);
+    vec2 cell = 1.0 / resolution.xy;
+    vec2 uv = gl_FragCoord.xy * cell;
+    vec4 value = texture2D(heightmap, uv);
+    float north = texture2D(heightmap, uv + vec2(0.0, cell.y)).x;
+    float south = texture2D(heightmap, uv - vec2(0.0, cell.y)).x;
+    float east = texture2D(heightmap, uv + vec2(cell.x, 0.0)).x;
+    float west = texture2D(heightmap, uv - vec2(cell.x, 0.0)).x;
+
+    float nextHeight = ((north + south + east + west) * 0.5 - value.y) * 0.982;
+
+    vec2 world = (uv - 0.5) * vec2(48.0, 22.0);
+    float mouseDistance = length(world - mousePos);
+    nextHeight -= exp(-mouseDistance * mouseDistance * 3.2) * mouseStrength;
+
+    int hour = int(clamp(floor(uv.x * 24.0), 0.0, 23.0));
+    float intensity = clamp(rainfall[hour] / 12.0, 0.0, 1.4);
+    float tick = floor(uTime * 22.0);
+    float seed = hash(gl_FragCoord.xy + vec2(tick, tick * 0.37));
+    float gate = step(0.70, fract(uTime * 22.0));
+    float inStrip = step(abs(world.y), 3.15);
+    float drop = step(0.9965 - intensity * 0.0018, seed) * gate * inStrip;
+    nextHeight -= drop * (0.006 + intensity * 0.009);
+
+    value.y = value.x;
+    value.x = clamp(nextHeight, -0.18, 0.18);
+    gl_FragColor = value;
   }
 `;
 
@@ -281,6 +287,7 @@ function makeTextSprite(
     transparent: true,
     depthWrite: false,
     depthTest: true,
+    toneMapped: false,
   });
   const sprite = new THREE.Sprite(material);
   const aspect = canvas.width / canvas.height;
@@ -293,14 +300,16 @@ function makeTextSprite(
 function makeAxis(data: number[]) {
   const group = new THREE.Group();
   const lineMaterial = new THREE.LineBasicMaterial({
-    color: 0xaab9c1,
+    color: 0xc2d0d6,
     transparent: true,
-    opacity: 0.23,
+    opacity: 0.46,
+    toneMapped: false,
   });
   const faintMaterial = new THREE.LineBasicMaterial({
-    color: 0x8fa8b4,
+    color: 0xaabcc4,
     transparent: true,
-    opacity: 0.075,
+    opacity: 0.19,
+    toneMapped: false,
   });
 
   const addLine = (points: THREE.Vector3[], material = lineMaterial) => {
@@ -316,7 +325,7 @@ function makeAxis(data: number[]) {
     addLine([new THREE.Vector3(x, 0, 2.66), new THREE.Vector3(x, 0, 2.88)], faintMaterial);
     const time = makeTextSprite(`${String(i * 4).padStart(2, "0")}:00`, {
       size: 30,
-      opacity: 0.34,
+      opacity: 0.62,
       mono: true,
     });
     time.position.set(x, -0.29, 3.02);
@@ -327,21 +336,21 @@ function makeAxis(data: number[]) {
     addLine([new THREE.Vector3(-13.1, y, 2.65), new THREE.Vector3(-12.85, y, 2.65)], faintMaterial);
     const value = makeTextSprite((i * 4.3).toFixed(1), {
       size: 28,
-      opacity: 0.34,
+      opacity: 0.58,
       mono: true,
     });
     value.position.set(-13.52, y, 2.7);
     group.add(value);
   }
 
-  const title = makeTextSprite("降雨强度", { size: 58, opacity: 0.78 });
+  const title = makeTextSprite("降雨强度", { size: 58, opacity: 0.92 });
   title.position.set(-13.15, 10.45, 2.65);
   title.scale.multiplyScalar(1.55);
   group.add(title);
-  const subtitle = makeTextSprite("每小时降水", { size: 34, opacity: 0.48 });
+  const subtitle = makeTextSprite("每小时降水", { size: 34, opacity: 0.72 });
   subtitle.position.set(-13.15, 9.68, 2.65);
   group.add(subtitle);
-  const unit = makeTextSprite("毫米 / 小时", { size: 27, opacity: 0.28 });
+  const unit = makeTextSprite("毫米 / 小时", { size: 27, opacity: 0.5 });
   unit.position.set(-13.45, 8.82, 2.65);
   group.add(unit);
 
@@ -356,7 +365,8 @@ function makeAxis(data: number[]) {
   addLine(curve.getPoints(180), new THREE.LineBasicMaterial({
     color: 0xc2d1d8,
     transparent: true,
-    opacity: 0.12,
+    opacity: 0.28,
+    toneMapped: false,
   }));
   return group;
 }
@@ -464,6 +474,170 @@ function createRainAudio(): RainAudioController {
   };
 }
 
+function RainCurveEditor({
+  values,
+  onChange,
+  onCommit,
+}: {
+  values: number[];
+  onChange: (values: number[]) => void;
+  onCommit: (values: number[]) => void;
+}) {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const activeRef = useRef<number | null>(null);
+  const valuesRef = useRef(values);
+  valuesRef.current = values;
+  const maxValue = 14;
+
+  const draw = () => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const rect = canvas.getBoundingClientRect();
+    const dpr = Math.min(window.devicePixelRatio, 2);
+    const width = Math.max(1, Math.round(rect.width * dpr));
+    const height = Math.max(1, Math.round(rect.height * dpr));
+    if (canvas.width !== width || canvas.height !== height) {
+      canvas.width = width;
+      canvas.height = height;
+    }
+    const context = canvas.getContext("2d");
+    if (!context) return;
+    context.setTransform(dpr, 0, 0, dpr, 0, 0);
+    context.clearRect(0, 0, rect.width, rect.height);
+    const padding = { left: 28, right: 12, top: 14, bottom: 25 };
+    const plotWidth = rect.width - padding.left - padding.right;
+    const plotHeight = rect.height - padding.top - padding.bottom;
+    const xFor = (index: number) => padding.left + (index / (values.length - 1)) * plotWidth;
+    const yFor = (value: number) => padding.top + (1 - value / maxValue) * plotHeight;
+
+    context.strokeStyle = "rgba(203, 220, 226, 0.09)";
+    context.lineWidth = 1;
+    for (let i = 0; i <= 4; i++) {
+      const y = padding.top + (i / 4) * plotHeight;
+      context.beginPath();
+      context.moveTo(padding.left, y);
+      context.lineTo(rect.width - padding.right, y);
+      context.stroke();
+    }
+    for (let i = 0; i <= 6; i++) {
+      const x = padding.left + (i / 6) * plotWidth;
+      context.beginPath();
+      context.moveTo(x, padding.top);
+      context.lineTo(x, rect.height - padding.bottom);
+      context.stroke();
+    }
+
+    const gradient = context.createLinearGradient(0, padding.top, 0, rect.height - padding.bottom);
+    gradient.addColorStop(0, "rgba(165, 205, 220, 0.15)");
+    gradient.addColorStop(1, "rgba(165, 205, 220, 0)");
+    context.beginPath();
+    values.forEach((value, index) => {
+      const x = xFor(index);
+      const y = yFor(value);
+      if (index === 0) context.moveTo(x, y);
+      else context.lineTo(x, y);
+    });
+    context.lineTo(xFor(values.length - 1), rect.height - padding.bottom);
+    context.lineTo(xFor(0), rect.height - padding.bottom);
+    context.closePath();
+    context.fillStyle = gradient;
+    context.fill();
+
+    context.beginPath();
+    values.forEach((value, index) => {
+      const x = xFor(index);
+      const y = yFor(value);
+      if (index === 0) context.moveTo(x, y);
+      else context.lineTo(x, y);
+    });
+    context.strokeStyle = "rgba(207, 224, 230, 0.7)";
+    context.lineWidth = 1.35;
+    context.stroke();
+
+    values.forEach((value, index) => {
+      const x = xFor(index);
+      const y = yFor(value);
+      context.beginPath();
+      context.arc(x, y, activeRef.current === index ? 4.2 : 2.5, 0, Math.PI * 2);
+      context.fillStyle = activeRef.current === index
+        ? "rgba(227, 239, 243, 0.95)"
+        : "rgba(180, 211, 223, 0.68)";
+      context.fill();
+    });
+
+    context.fillStyle = "rgba(202, 218, 224, 0.28)";
+    context.font = "8px Consolas, monospace";
+    context.textAlign = "center";
+    ["00", "04", "08", "12", "16", "20", "24"].forEach((label, index) => {
+      context.fillText(label, padding.left + (index / 6) * plotWidth, rect.height - 7);
+    });
+    context.textAlign = "right";
+    context.fillText("14", padding.left - 7, padding.top + 3);
+    context.fillText("7", padding.left - 7, padding.top + plotHeight / 2 + 3);
+    context.fillText("0", padding.left - 7, rect.height - padding.bottom + 3);
+  };
+
+  useEffect(() => {
+    draw();
+    const observer = new ResizeObserver(draw);
+    if (canvasRef.current) observer.observe(canvasRef.current);
+    return () => observer.disconnect();
+  }, [values]);
+
+  const updateFromPointer = (event: React.PointerEvent<HTMLCanvasElement>) => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const rect = canvas.getBoundingClientRect();
+    const padding = { left: 28, right: 12, top: 14, bottom: 25 };
+    const plotWidth = rect.width - padding.left - padding.right;
+    const plotHeight = rect.height - padding.top - padding.bottom;
+    const index = Math.max(
+      0,
+      Math.min(
+        values.length - 1,
+        Math.round(((event.clientX - rect.left - padding.left) / plotWidth) * (values.length - 1)),
+      ),
+    );
+    const value = Math.max(
+      0,
+      Math.min(maxValue, (1 - (event.clientY - rect.top - padding.top) / plotHeight) * maxValue),
+    );
+    const next = [...valuesRef.current];
+    next[index] = Math.round(value * 10) / 10;
+    activeRef.current = index;
+    valuesRef.current = next;
+    onChange(next);
+  };
+
+  return (
+    <canvas
+      ref={canvasRef}
+      className="curve-editor"
+      aria-label="拖动曲线控制点编辑每小时降雨量"
+      onPointerDown={(event) => {
+        event.currentTarget.setPointerCapture(event.pointerId);
+        updateFromPointer(event);
+      }}
+      onPointerMove={(event) => {
+        if (event.currentTarget.hasPointerCapture(event.pointerId)) updateFromPointer(event);
+      }}
+      onPointerUp={(event) => {
+        updateFromPointer(event);
+        event.currentTarget.releasePointerCapture(event.pointerId);
+        activeRef.current = null;
+        onCommit(valuesRef.current);
+      }}
+      onPointerCancel={(event) => {
+        activeRef.current = null;
+        if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+          event.currentTarget.releasePointerCapture(event.pointerId);
+        }
+        onCommit(valuesRef.current);
+      }}
+    />
+  );
+}
+
 export default function RainExperience() {
   const hostRef = useRef<HTMLDivElement>(null);
   const audioRef = useRef<RainAudioController | null>(null);
@@ -530,7 +704,7 @@ export default function RainExperience() {
     const groundPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
     const groundHit = new THREE.Vector3();
     let lastPointerMove = -100;
-    let rippleIndex = 0;
+    let waterImpulse = 0;
 
     const renderer = new THREE.WebGLRenderer({
       antialias: false,
@@ -601,21 +775,27 @@ export default function RainExperience() {
     });
     scene.add(new THREE.LineSegments(rainGeometry, rainMaterial));
 
+    const waterWidth = profile.name === "ECO" ? 128 : 256;
+    const waterHeight = profile.name === "ECO" ? 32 : 64;
+    const gpuCompute = new GPUComputationRenderer(waterWidth, waterHeight, renderer);
+    const initialWater = gpuCompute.createTexture();
+    initialWater.image.data.fill(0);
+    const heightmapVariable = gpuCompute.addVariable("heightmap", waterComputeShader, initialWater);
+    gpuCompute.setVariableDependencies(heightmapVariable, [heightmapVariable]);
+    const computeUniforms = heightmapVariable.material.uniforms;
+    computeUniforms.mousePos = { value: new THREE.Vector2(1000, 1000) };
+    computeUniforms.mouseStrength = { value: 0 };
+    computeUniforms.uTime = { value: 0 };
+    computeUniforms.rainfall = { value: [...rainfall] };
+    const computeError = gpuCompute.init();
+    if (computeError) console.error(computeError);
+
     const floorUniforms = {
-      uTime: { value: 0 },
-      uMouseWorld: { value: mouseWorld.clone() },
-      uMouseForce: { value: 0 },
-      uRipples: {
-        value: [
-          new THREE.Vector3(0, 0, -100),
-          new THREE.Vector3(0, 0, -100),
-          new THREE.Vector3(0, 0, -100),
-          new THREE.Vector3(0, 0, -100),
-        ],
-      },
+      heightmap: { value: gpuCompute.getCurrentRenderTarget(heightmapVariable).texture },
+      uTexel: { value: new THREE.Vector2(1 / waterWidth, 1 / waterHeight) },
     };
     const floor = new THREE.Mesh(
-      new THREE.PlaneGeometry(48, 22, 260, 120),
+      new THREE.PlaneGeometry(48, 22, waterWidth - 1, waterHeight - 1),
       new THREE.ShaderMaterial({
         vertexShader: floorVertexShader,
         fragmentShader: floorFragmentShader,
@@ -657,7 +837,6 @@ export default function RainExperience() {
       if (raycaster.ray.intersectPlane(groundPlane, groundHit)) {
         mouseWorld.set(groundHit.x, groundHit.z);
         rainUniforms.uMouseWorld.value.copy(mouseWorld);
-        floorUniforms.uMouseWorld.value.copy(mouseWorld);
         if (
           mouseWorld.x >= -12.7 &&
           mouseWorld.x <= 12.7 &&
@@ -682,9 +861,7 @@ export default function RainExperience() {
     };
     const onPointerDown = (event: PointerEvent) => {
       updatePointerWorld(event);
-      const slot = floorUniforms.uRipples.value[rippleIndex];
-      slot.set(mouseWorld.x, mouseWorld.y, clock.getElapsedTime());
-      rippleIndex = (rippleIndex + 1) % floorUniforms.uRipples.value.length;
+      waterImpulse = 0.052;
     };
     const onResize = () => {
       const width = host.clientWidth;
@@ -705,15 +882,19 @@ export default function RainExperience() {
       const elapsed = clock.getElapsedTime();
       pointerSmooth.lerp(pointer, 0.025);
       rainUniforms.uTime.value = elapsed;
-      floorUniforms.uTime.value = elapsed;
       impactUniforms.uTime.value = elapsed;
       const mouseForce = Math.max(0, 1 - (elapsed - lastPointerMove) * 0.65);
       rainUniforms.uMouseForce.value += (mouseForce - rainUniforms.uMouseForce.value) * 0.08;
-      floorUniforms.uMouseForce.value = rainUniforms.uMouseForce.value;
       rainUniforms.uWind.value.set(
         pointerSmooth.x * 0.34 + Math.sin(elapsed * 0.17) * 0.035,
         pointerSmooth.y * 0.12,
       );
+      waterImpulse = Math.max(waterImpulse * 0.84, mouseForce * 0.0022);
+      computeUniforms.mousePos.value.copy(mouseWorld);
+      computeUniforms.mouseStrength.value = waterImpulse;
+      computeUniforms.uTime.value = elapsed;
+      gpuCompute.compute();
+      floorUniforms.heightmap.value = gpuCompute.getCurrentRenderTarget(heightmapVariable).texture;
 
       currentDrops += (targetDrops - currentDrops) * 0.025;
       rainGeometry.setDrawRange(0, Math.floor(currentDrops) * 2);
@@ -752,6 +933,7 @@ export default function RainExperience() {
       axisGroupRef.current = null;
       rainGeometry.dispose();
       rainMaterial.dispose();
+      gpuCompute.dispose();
       floor.geometry.dispose();
       (floor.material as THREE.Material).dispose();
       impacts.geometry.dispose();
@@ -772,11 +954,6 @@ export default function RainExperience() {
       renderer.domElement.remove();
     };
   }, [rainfall]);
-
-  const applyData = () => {
-    setRainfall(draft.map((value) => Math.max(0, Math.min(20, Number(value) || 0))));
-    setEditorOpen(false);
-  };
 
   return (
     <main className="rain-app">
@@ -842,27 +1019,26 @@ export default function RainExperience() {
           </div>
           <button type="button" onClick={() => setEditorOpen(false)} aria-label="关闭编辑器">×</button>
         </div>
-        <p>输入各时段的毫米／小时数据，雨幕高度和密度会随之重新生成。</p>
-        <div className="data-grid">
-          {draft.map((value, index) => (
-            <label key={index}>
-              <span>{String(index).padStart(2, "0")}:00</span>
-              <input
-                type="number"
-                min="0"
-                max="20"
-                step="0.1"
-                value={value}
-                onChange={(event) => {
-                  const next = [...draft];
-                  next[index] = Number(event.target.value);
-                  setDraft(next);
-                }}
-              />
-            </label>
-          ))}
+        <p>直接拖动曲线上的控制点。松开后，雨幕高度、密度和水面落点会立即更新。</p>
+        <RainCurveEditor
+          values={draft}
+          onChange={setDraft}
+          onCommit={(next) => setRainfall(next)}
+        />
+        <div className="curve-stats">
+          <span>峰值 <b>{Math.max(...draft).toFixed(1)}</b> mm/h</span>
+          <span>均值 <b>{(draft.reduce((sum, value) => sum + value, 0) / draft.length).toFixed(1)}</b> mm/h</span>
         </div>
-        <button type="button" className="apply-data" onClick={applyData}>应用到雨幕</button>
+        <button
+          type="button"
+          className="apply-data"
+          onClick={() => {
+            setDraft(initialRainfall);
+            setRainfall(initialRainfall);
+          }}
+        >
+          恢复示例曲线
+        </button>
       </aside>
     </main>
   );
