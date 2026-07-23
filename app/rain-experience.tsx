@@ -32,6 +32,7 @@ const rainVertexShader = /* glsl */ `
   uniform vec2 uWind;
   varying float vAlpha;
   varying float vGlow;
+  varying vec3 vRainWorld;
 
   void main() {
     float cycle = fract(uTime * aSpeed + aPhase);
@@ -48,6 +49,7 @@ const rainVertexShader = /* glsl */ `
     float depth = smoothstep(-2.6, 2.2, p.z);
     vAlpha = born * impact * mix(0.055, 0.32, aGlow) * mix(0.52, 1.0, depth);
     vGlow = aGlow;
+    vRainWorld = p;
     gl_Position = projectionMatrix * modelViewMatrix * vec4(p, 1.0);
   }
 `;
@@ -55,10 +57,18 @@ const rainVertexShader = /* glsl */ `
 const rainFragmentShader = /* glsl */ `
   varying float vAlpha;
   varying float vGlow;
+  varying vec3 vRainWorld;
   void main() {
     vec3 graphite = vec3(0.19, 0.22, 0.24);
     vec3 silver = vec3(0.52, 0.60, 0.64);
-    gl_FragColor = vec4(mix(graphite, silver, vGlow), vAlpha);
+    vec2 p = vRainWorld.xz;
+    float lamps =
+      exp(-dot(p - vec2(-8.8, 0.0), p - vec2(-8.8, 0.0)) * 0.22) +
+      exp(-dot(p - vec2(0.8, 0.0), p - vec2(0.8, 0.0)) * 0.26) +
+      exp(-dot(p - vec2(9.2, 0.0), p - vec2(9.2, 0.0)) * 0.24);
+    float lowCone = 1.0 - smoothstep(0.7, 5.0, vRainWorld.y);
+    vec3 litSilver = mix(silver, vec3(0.38, 0.72, 0.92), clamp(lamps * lowCone, 0.0, 1.0));
+    gl_FragColor = vec4(mix(graphite, litSilver, vGlow), vAlpha * (1.0 + lamps * lowCone * 1.7));
   }
 `;
 
@@ -119,16 +129,16 @@ const floorFragmentShader = /* glsl */ `
     // A few restrained pools of light give the otherwise black field depth.
     // Their highlights are broken by the same simulated normal as the ripples.
     float pools =
-      exp(-dot(p - vec2(-10.0, -4.8), p - vec2(-10.0, -4.8)) * 0.075) +
-      exp(-dot(p - vec2(1.5, 5.8), p - vec2(1.5, 5.8)) * 0.095) +
-      exp(-dot(p - vec2(10.5, -1.6), p - vec2(10.5, -1.6)) * 0.11);
+      exp(-dot(p - vec2(-8.8, 0.0), p - vec2(-8.8, 0.0)) * 0.17) +
+      exp(-dot(p - vec2(0.8, 0.0), p - vec2(0.8, 0.0)) * 0.20) +
+      exp(-dot(p - vec2(9.2, 0.0), p - vec2(9.2, 0.0)) * 0.18);
     color += vec3(0.018, 0.026, 0.031) * fresnel * waterField;
     color += reflectedSky * fresnel * 0.68 * waterField;
     color += vec3(0.25, 0.31, 0.34) * specular * waterField;
     color += vec3(0.032, 0.049, 0.056) * slope * waterField;
     color += vec3(0.034, 0.052, 0.060) * waveContour * (0.65 + slope) * waterField;
     color += vec3(0.018, 0.029, 0.034) * readableCrest * waterField;
-    color += vec3(0.032, 0.057, 0.068) * pools * (0.65 + slope * 2.8);
+    color += vec3(0.065, 0.13, 0.19) * pools * (0.75 + slope * 3.2);
     color *= edgeFade;
     gl_FragColor = vec4(color, 1.0);
   }
@@ -216,7 +226,7 @@ const lightPoolFragmentShader = /* glsl */ `
     float radius = length(p) * 2.0;
     float halo = smoothstep(1.0, 0.0, radius);
     halo = halo * halo * (3.0 - 2.0 * halo);
-    gl_FragColor = vec4(vec3(0.11, 0.33, 0.46), halo * 0.16);
+    gl_FragColor = vec4(vec3(0.22, 0.58, 0.92), halo * 0.52);
   }
 `;
 
@@ -341,13 +351,13 @@ function makeAxis(data: number[]) {
   const lineMaterial = new THREE.LineBasicMaterial({
     color: 0xc2d0d6,
     transparent: true,
-    opacity: 0.76,
+    opacity: 0.92,
     toneMapped: false,
   });
   const faintMaterial = new THREE.LineBasicMaterial({
     color: 0xaabcc4,
     transparent: true,
-    opacity: 0.36,
+    opacity: 0.52,
     toneMapped: false,
   });
 
@@ -364,7 +374,7 @@ function makeAxis(data: number[]) {
     addLine([new THREE.Vector3(x, 0, 2.66), new THREE.Vector3(x, 0, 2.88)], faintMaterial);
     const time = makeTextSprite(`${String(i * 4).padStart(2, "0")}:00`, {
       size: 30,
-      opacity: 0.78,
+      opacity: 0.9,
       mono: true,
     });
     time.position.set(x, -0.29, 3.02);
@@ -375,7 +385,7 @@ function makeAxis(data: number[]) {
     addLine([new THREE.Vector3(-13.1, y, 2.65), new THREE.Vector3(-12.85, y, 2.65)], faintMaterial);
     const value = makeTextSprite((i * 4.3).toFixed(1), {
       size: 28,
-      opacity: 0.72,
+      opacity: 0.84,
       mono: true,
     });
     value.position.set(-13.52, y, 2.7);
@@ -386,10 +396,10 @@ function makeAxis(data: number[]) {
   title.position.set(-13.15, 10.45, 2.65);
   title.scale.multiplyScalar(1.55);
   group.add(title);
-  const subtitle = makeTextSprite("每小时降水", { size: 34, opacity: 0.72 });
+  const subtitle = makeTextSprite("每小时降水", { size: 34, opacity: 0.84 });
   subtitle.position.set(-13.15, 9.68, 2.65);
   group.add(subtitle);
-  const unit = makeTextSprite("毫米 / 小时", { size: 27, opacity: 0.5 });
+  const unit = makeTextSprite("毫米 / 小时", { size: 27, opacity: 0.68 });
   unit.position.set(-13.45, 8.82, 2.65);
   group.add(unit);
 
@@ -848,9 +858,9 @@ export default function RainExperience() {
       blending: THREE.AdditiveBlending,
     });
     const lightPools = [
-      [-8.8, -4.8, 3.0],
-      [1.6, 5.6, 2.35],
-      [10.2, -1.7, 2.7],
+      [-8.8, 0.0, 2.4],
+      [0.8, 0.0, 2.0],
+      [9.2, 0.0, 2.25],
     ].map(([x, z, scale]) => {
       const pool = new THREE.Mesh(lightPoolGeometry, lightPoolMaterial);
       pool.rotation.x = -Math.PI / 2;
