@@ -32,7 +32,6 @@ const rainVertexShader = /* glsl */ `
   uniform vec2 uWind;
   varying float vAlpha;
   varying float vGlow;
-  varying vec3 vRainWorld;
 
   void main() {
     float cycle = fract(uTime * aSpeed + aPhase);
@@ -49,7 +48,6 @@ const rainVertexShader = /* glsl */ `
     float depth = smoothstep(-2.6, 2.2, p.z);
     vAlpha = born * impact * mix(0.055, 0.32, aGlow) * mix(0.52, 1.0, depth);
     vGlow = aGlow;
-    vRainWorld = p;
     gl_Position = projectionMatrix * modelViewMatrix * vec4(p, 1.0);
   }
 `;
@@ -57,18 +55,10 @@ const rainVertexShader = /* glsl */ `
 const rainFragmentShader = /* glsl */ `
   varying float vAlpha;
   varying float vGlow;
-  varying vec3 vRainWorld;
   void main() {
     vec3 graphite = vec3(0.19, 0.22, 0.24);
     vec3 silver = vec3(0.52, 0.60, 0.64);
-    vec2 p = vRainWorld.xz;
-    float lamps =
-      exp(-dot(p - vec2(-8.8, 0.0), p - vec2(-8.8, 0.0)) * 0.22) +
-      exp(-dot(p - vec2(0.8, 0.0), p - vec2(0.8, 0.0)) * 0.26) +
-      exp(-dot(p - vec2(9.2, 0.0), p - vec2(9.2, 0.0)) * 0.24);
-    float lowCone = 1.0 - smoothstep(0.7, 5.0, vRainWorld.y);
-    vec3 litSilver = mix(silver, vec3(0.38, 0.72, 0.92), clamp(lamps * lowCone, 0.0, 1.0));
-    gl_FragColor = vec4(mix(graphite, litSilver, vGlow), vAlpha * (1.0 + lamps * lowCone * 1.7));
+    gl_FragColor = vec4(mix(graphite, silver, vGlow), vAlpha);
   }
 `;
 
@@ -126,19 +116,12 @@ const floorFragmentShader = /* glsl */ `
     vec3 color = base;
     vec3 reflectedSky = mix(vec3(0.001, 0.003, 0.004), vec3(0.042, 0.069, 0.079),
       smoothstep(-0.15, 0.8, reflected.y));
-    // A few restrained pools of light give the otherwise black field depth.
-    // Their highlights are broken by the same simulated normal as the ripples.
-    float pools =
-      exp(-dot(p - vec2(-8.8, 0.0), p - vec2(-8.8, 0.0)) * 0.17) +
-      exp(-dot(p - vec2(0.8, 0.0), p - vec2(0.8, 0.0)) * 0.20) +
-      exp(-dot(p - vec2(9.2, 0.0), p - vec2(9.2, 0.0)) * 0.18);
     color += vec3(0.018, 0.026, 0.031) * fresnel * waterField;
     color += reflectedSky * fresnel * 0.68 * waterField;
     color += vec3(0.25, 0.31, 0.34) * specular * waterField;
     color += vec3(0.032, 0.049, 0.056) * slope * waterField;
     color += vec3(0.034, 0.052, 0.060) * waveContour * (0.65 + slope) * waterField;
     color += vec3(0.018, 0.029, 0.034) * readableCrest * waterField;
-    color += vec3(0.065, 0.13, 0.19) * pools * (0.75 + slope * 3.2);
     color *= edgeFade;
     gl_FragColor = vec4(color, 1.0);
   }
@@ -211,7 +194,7 @@ const impactFragmentShader = /* glsl */ `
   }
 `;
 
-const lightPoolVertexShader = /* glsl */ `
+const lightColumnVertexShader = /* glsl */ `
   varying vec2 vUv;
   void main() {
     vUv = uv;
@@ -219,14 +202,14 @@ const lightPoolVertexShader = /* glsl */ `
   }
 `;
 
-const lightPoolFragmentShader = /* glsl */ `
+const lightColumnFragmentShader = /* glsl */ `
   varying vec2 vUv;
   void main() {
-    vec2 p = vUv - 0.5;
-    float radius = length(p) * 2.0;
-    float halo = smoothstep(1.0, 0.0, radius);
-    halo = halo * halo * (3.0 - 2.0 * halo);
-    gl_FragColor = vec4(vec3(0.22, 0.58, 0.92), halo * 0.52);
+    float heightFade = smoothstep(0.0, 0.14, vUv.y) * (1.0 - smoothstep(0.54, 1.0, vUv.y));
+    float halfWidth = mix(0.16, 0.72, vUv.y);
+    float across = 1.0 - smoothstep(halfWidth, halfWidth + 0.12, abs(vUv.x - 0.5));
+    float grain = 0.82 + 0.18 * sin(vUv.y * 55.0 + vUv.x * 17.0);
+    gl_FragColor = vec4(vec3(0.72, 0.78, 0.80), heightFade * across * grain * 0.17);
   }
 `;
 
@@ -851,28 +834,32 @@ export default function RainExperience() {
     floor.position.y = -0.035;
     scene.add(floor);
 
-    // Visible, low-energy pools matching the reference's isolated blue-white
-    // illuminations. They sit on the surface and remain subtle under the rain.
-    const lightPoolGeometry = new THREE.CircleGeometry(1, 64);
-    const lightPoolMaterial = new THREE.ShaderMaterial({
-      vertexShader: lightPoolVertexShader,
-      fragmentShader: lightPoolFragmentShader,
+    // The three strongest rainfall columns receive silver volumetric light.
+    // Their positions, height and spread are regenerated from edited data.
+    const lightColumnGeometry = new THREE.PlaneGeometry(1, 1, 1, 8);
+    const lightColumnMaterial = new THREE.ShaderMaterial({
+      vertexShader: lightColumnVertexShader,
+      fragmentShader: lightColumnFragmentShader,
       transparent: true,
       depthWrite: false,
+      depthTest: false,
       blending: THREE.AdditiveBlending,
+      side: THREE.DoubleSide,
     });
-    const lightPools = [
-      [-8.8, 0.0, 2.4],
-      [0.8, 0.0, 2.0],
-      [9.2, 0.0, 2.25],
-    ].map(([x, z, scale]) => {
-      const pool = new THREE.Mesh(lightPoolGeometry, lightPoolMaterial);
-      pool.rotation.x = -Math.PI / 2;
-      pool.position.set(x, -0.02, z);
-      pool.scale.setScalar(scale);
-      scene.add(pool);
-      return pool;
-    });
+    const lightColumns = rainfall
+      .map((value, hour) => ({ value, hour }))
+      .sort((a, b) => b.value - a.value)
+      .slice(0, 3)
+      .map(({ value, hour }) => {
+        const x = -12.2 + (hour / (rainfall.length - 1)) * 24.4;
+        const height = 1.1 + (value / 12) * 6.6;
+        const column = new THREE.Mesh(lightColumnGeometry, lightColumnMaterial);
+        column.position.set(x, height * 0.5, 0.18);
+        column.scale.set(0.55 + (value / 12) * 1.15, height, 1);
+        column.renderOrder = 1;
+        scene.add(column);
+        return column;
+      });
 
     const axis = makeAxis(rainfall);
     axis.visible = axesVisible;
@@ -999,9 +986,9 @@ export default function RainExperience() {
       gpuCompute.dispose();
       floor.geometry.dispose();
       (floor.material as THREE.Material).dispose();
-      lightPools.forEach((pool) => scene.remove(pool));
-      lightPoolGeometry.dispose();
-      lightPoolMaterial.dispose();
+      lightColumns.forEach((column) => scene.remove(column));
+      lightColumnGeometry.dispose();
+      lightColumnMaterial.dispose();
       axis.traverse((child) => {
         if (child instanceof THREE.Line) {
           child.geometry.dispose();
