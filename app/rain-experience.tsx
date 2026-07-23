@@ -666,6 +666,7 @@ export default function RainExperience() {
   const audioRef = useRef<RainAudioController | null>(null);
   const axisGroupRef = useRef<THREE.Group | null>(null);
   const resetViewRef = useRef<(() => void) | null>(null);
+  const viewStateRef = useRef<{ position: number[]; target: number[]; autoRotate: boolean } | null>(null);
   const [rainfall, setRainfall] = useState(initialRainfall);
   const [draft, setDraft] = useState(initialRainfall);
   const [editorOpen, setEditorOpen] = useState(false);
@@ -714,6 +715,7 @@ export default function RainExperience() {
     if (!host) return;
 
     const profile = selectProfile();
+    const savedView = viewStateRef.current;
     const maxDrops = 56000;
     let targetDrops = profile.drops;
     let currentDrops = profile.drops;
@@ -763,6 +765,12 @@ export default function RainExperience() {
     controls.autoRotate = !reducedMotion;
     controls.autoRotateSpeed = 0.24;
     controls.saveState();
+    if (savedView) {
+      camera.position.fromArray(savedView.position);
+      controls.target.fromArray(savedView.target);
+      controls.autoRotate = savedView.autoRotate;
+      controls.update();
+    }
     const stopAutoRotate = () => {
       controls.autoRotate = false;
     };
@@ -978,6 +986,11 @@ export default function RainExperience() {
       host.removeEventListener("pointerdown", onPointerDown);
       window.removeEventListener("resize", onResize);
       controls.removeEventListener("start", stopAutoRotate);
+      viewStateRef.current = {
+        position: camera.position.toArray(),
+        target: controls.target.toArray(),
+        autoRotate: controls.autoRotate,
+      };
       controls.dispose();
       resetViewRef.current = null;
       axisGroupRef.current = null;
