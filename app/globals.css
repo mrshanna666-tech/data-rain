@@ -184,25 +184,49 @@ input {
 
 .scene-actions {
   position: absolute;
-  top: 24px;
-  right: 28px;
+  top: 18px;
+  right: 48px;
   display: flex;
   border: 1px solid rgba(213, 226, 231, 0.1);
   background: rgba(3, 6, 7, 0.3);
+  transition: opacity 180ms ease, transform 180ms ease;
+}
+
+.scene-actions.hidden {
+  opacity: 0;
+  transform: translateY(-8px);
+  pointer-events: none;
+}
+
+.control-reveal {
+  position: absolute;
+  top: 18px;
+  right: 18px;
+  z-index: 3;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 1px solid rgba(213, 226, 231, 0.13);
+  color: rgba(221, 232, 235, 0.48);
+  background: rgba(3, 6, 7, 0.24);
+  font: 13px/1 var(--font-geist-mono), monospace;
+  cursor: pointer;
 }
 
 .edit-trigger,
 .sound-trigger,
 .axis-trigger,
 .reset-trigger {
-  padding: 8px 11px;
+  width: 26px;
+  height: 22px;
+  padding: 0;
   border: 0;
   border-left: 1px solid rgba(213, 226, 231, 0.1);
   color: rgba(217, 228, 232, 0.3);
   background: transparent;
   font-family: var(--font-geist-mono), monospace;
-  font-size: 8px;
-  letter-spacing: 0.08em;
+  font-size: 12px;
+  letter-spacing: 0;
   cursor: pointer;
   transition: color 160ms ease, border-color 160ms ease;
 }
@@ -221,9 +245,8 @@ input {
 }
 
 .sound-trigger {
-  display: flex;
-  align-items: center;
-  gap: 7px;
+  display: grid;
+  place-items: center;
   border-left: 0;
 }
 

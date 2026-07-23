@@ -96,6 +96,7 @@ const floorFragmentShader = /* glsl */ `
     // The whole mesh is the water surface. Do not crop it to the rain curtain:
     // energy is allowed to travel across the complete simulation field.
     float waterField = 1.0;
+    vec2 p = vWorld.xz;
     vec3 normal = normalize(vNormal);
     vec3 viewDirection = normalize(cameraPosition - vWorld);
     vec3 lightDirection = normalize(vec3(-0.42, 1.0, 0.38));
@@ -115,12 +116,19 @@ const floorFragmentShader = /* glsl */ `
     vec3 color = base;
     vec3 reflectedSky = mix(vec3(0.001, 0.003, 0.004), vec3(0.042, 0.069, 0.079),
       smoothstep(-0.15, 0.8, reflected.y));
+    // A few restrained pools of light give the otherwise black field depth.
+    // Their highlights are broken by the same simulated normal as the ripples.
+    float pools =
+      exp(-dot(p - vec2(-10.0, -4.8), p - vec2(-10.0, -4.8)) * 0.075) +
+      exp(-dot(p - vec2(1.5, 5.8), p - vec2(1.5, 5.8)) * 0.095) +
+      exp(-dot(p - vec2(10.5, -1.6), p - vec2(10.5, -1.6)) * 0.11);
     color += vec3(0.018, 0.026, 0.031) * fresnel * waterField;
     color += reflectedSky * fresnel * 0.68 * waterField;
     color += vec3(0.25, 0.31, 0.34) * specular * waterField;
     color += vec3(0.032, 0.049, 0.056) * slope * waterField;
     color += vec3(0.034, 0.052, 0.060) * waveContour * (0.65 + slope) * waterField;
     color += vec3(0.018, 0.029, 0.034) * readableCrest * waterField;
+    color += vec3(0.016, 0.027, 0.032) * pools * (0.4 + slope * 2.2);
     color *= edgeFade;
     gl_FragColor = vec4(color, 1.0);
   }
@@ -366,20 +374,6 @@ function makeAxis(data: number[]) {
   unit.position.set(-13.45, 8.82, 2.65);
   group.add(unit);
 
-  const curvePoints = data.map((value, index) =>
-    new THREE.Vector3(
-      -12.2 + (index / (data.length - 1)) * 24.4,
-      0.16 + (value / 12) * 8.4,
-      0,
-    ),
-  );
-  const curve = new THREE.CatmullRomCurve3(curvePoints, false, "catmullrom", 0.08);
-  addLine(curve.getPoints(180), new THREE.LineBasicMaterial({
-    color: 0xc2d1d8,
-    transparent: true,
-    opacity: 0.38,
-    toneMapped: false,
-  }));
   return group;
 }
 
@@ -659,7 +653,8 @@ export default function RainExperience() {
   const [draft, setDraft] = useState(initialRainfall);
   const [editorOpen, setEditorOpen] = useState(false);
   const [soundOn, setSoundOn] = useState(false);
-  const [axesVisible, setAxesVisible] = useState(true);
+  const [axesVisible, setAxesVisible] = useState(false);
+  const [controlsVisible, setControlsVisible] = useState(true);
   const [hoveredHour, setHoveredHour] = useState<number | null>(null);
   const [telemetry, setTelemetry] = useState<Telemetry>({ fps: 60, drops: 0, profile: "检测中" });
   const average = useMemo(
@@ -968,54 +963,48 @@ export default function RainExperience() {
       <div ref={hostRef} className="rain-canvas" aria-hidden="true" />
       <div className="vignette" aria-hidden="true" />
 
-      <div className={`hour-readout ${hoveredHour !== null ? "visible" : ""}`}>
-        <small>
-          {hoveredHour !== null ? `${String(hoveredHour).padStart(2, "0")}:00` : "00:00"}
-        </small>
-        <strong>{hoveredHour !== null ? rainfall[hoveredHour].toFixed(1) : "0.0"}</strong>
-        <span>毫米／小时</span>
-      </div>
-
-      <div className="render-status">
-        <span>{telemetry.drops.toLocaleString("zh-CN")} 粒子</span>
-        <i />
-        <span>{telemetry.fps} FPS</span>
-        <i />
-        <span>{telemetry.profile} / AUTO</span>
-      </div>
-
-      <div className="interaction-hint" aria-hidden="true">
-        拖拽旋转 · 滚轮缩放 · 悬停读取 · 点击激起涟漪
-      </div>
-
-      <div className="scene-actions">
+      <button
+        type="button"
+        className="control-reveal"
+        onClick={() => setControlsVisible((value) => !value)}
+        aria-label={controlsVisible ? "隐藏控制" : "显示控制"}
+        aria-pressed={controlsVisible}
+      >
+        {controlsVisible ? "−" : "+"}
+      </button>
+      <div className={`scene-actions ${controlsVisible ? "" : "hidden"}`}>
         <button
           type="button"
           className={`sound-trigger ${soundOn ? "active" : ""}`}
           onClick={toggleSound}
           aria-pressed={soundOn}
+          aria-label="雨声"
+          title="雨声"
         >
-          <span className="sound-bars" aria-hidden="true"><i /><i /><i /></span>
-          {soundOn ? "雨声 开" : "开启雨声"}
+          ♫
         </button>
         <button
           type="button"
           className="axis-trigger"
           onClick={() => setAxesVisible((value) => !value)}
           aria-pressed={axesVisible}
+          aria-label="坐标轴"
+          title="坐标轴"
         >
-          坐标 {axesVisible ? "开" : "关"}
+          ⌗
         </button>
-        <button type="button" className="reset-trigger" onClick={() => resetViewRef.current?.()}>
-          复位视角
+        <button type="button" className="reset-trigger" onClick={() => resetViewRef.current?.()} aria-label="复位视角" title="复位视角">
+          ↺
         </button>
         <button
           type="button"
           className="edit-trigger"
           onClick={() => setEditorOpen(true)}
           aria-expanded={editorOpen}
+          aria-label="编辑降雨"
+          title="编辑降雨"
         >
-          编辑降雨数据
+          ≋
         </button>
       </div>
 
