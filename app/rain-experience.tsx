@@ -99,6 +99,7 @@ const floorFragmentShader = /* glsl */ `
     vec3 viewDirection = normalize(cameraPosition - vWorld);
     vec3 lightDirection = normalize(vec3(-0.42, 1.0, 0.38));
     float fresnel = pow(1.0 - max(dot(normal, viewDirection), 0.0), 3.2);
+    vec3 reflected = reflect(-viewDirection, normal);
     float specular = pow(max(dot(reflect(-lightDirection, normal), viewDirection), 0.0), 78.0);
     float slope = clamp(length(normal.xz) * 3.7, 0.0, 1.0);
     float waveContour = smoothstep(0.0007, 0.010, vWave);
@@ -108,7 +109,10 @@ const floorFragmentShader = /* glsl */ `
       * smoothstep(0.0, 0.12, 1.0 - vUv.y);
     vec3 base = vec3(0.0006, 0.0011, 0.0015);
     vec3 color = base;
+    vec3 reflectedSky = mix(vec3(0.001, 0.003, 0.004), vec3(0.042, 0.069, 0.079),
+      smoothstep(-0.15, 0.8, reflected.y));
     color += vec3(0.018, 0.026, 0.031) * fresnel * strip;
+    color += reflectedSky * fresnel * 0.68 * strip;
     color += vec3(0.25, 0.31, 0.34) * specular * strip;
     color += vec3(0.032, 0.049, 0.056) * slope * strip;
     color += vec3(0.026, 0.039, 0.045) * waveContour * (0.35 + slope) * strip;
@@ -130,22 +134,27 @@ const waterComputeShader = /* glsl */ `
     float east = texture2D(heightmap, uv + vec2(cell.x, 0.0)).x;
     float west = texture2D(heightmap, uv - vec2(cell.x, 0.0)).x;
 
-    // A second-order finite-difference wave equation. x is the present height,
-    // y is the previous height: waves propagate naturally and interfere in the buffer.
-    float nextHeight = ((north + south + east + west) * 0.5 - value.y) * 0.993;
+    // Evan Wallace's water state layout: x = height, y = vertical velocity.
+    // The velocity relaxes towards the four-neighbour average, then advances the
+    // height. This preserves a clean circular wavefront instead of noisy pulses.
+    float average = (north + south + east + west) * 0.25;
+    float nextVelocity = (value.y + (average - value.x) * 2.0) * 0.995;
+    float nextHeight = value.x + nextVelocity;
 
     vec2 world = (uv - 0.5) * vec2(48.0, 22.0);
     float splat = 0.0;
     for (int i = 0; i < 16; i++) {
       float age = uTime - uImpacts[i].z;
-      float live = step(0.0, age) * (1.0 - step(0.052, age));
+      float live = step(0.0, age) * (1.0 - step(0.019, age));
       vec2 delta = world - uImpacts[i].xy;
-      splat += exp(-dot(delta, delta) * 18.0) * uImpacts[i].w * live;
+      float radial = max(0.0, 1.0 - length(delta) / 0.92);
+      radial = 0.5 - cos(radial * 3.14159265) * 0.5;
+      splat += radial * uImpacts[i].w * live;
     }
-    nextHeight -= splat;
+    nextHeight += splat;
 
-    value.y = value.x;
-    value.x = clamp(nextHeight, -0.18, 0.18);
+    value.y = nextVelocity;
+    value.x = clamp(nextHeight, -0.14, 0.14);
     gl_FragColor = value;
   }
 `;
