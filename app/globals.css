@@ -358,9 +358,9 @@ input {
   z-index: 4;
   top: 0;
   right: 0;
-  width: min(470px, 94vw);
+  width: min(360px, 92vw);
   height: 100%;
-  padding: 26px;
+  padding: 18px;
   border-left: 1px solid rgba(211, 225, 230, 0.11);
   background: rgba(4, 8, 10, 0.96);
   box-shadow: -25px 0 70px rgba(0, 0, 0, 0.5);
@@ -390,7 +390,7 @@ input {
 
 .editor-head h2 {
   margin: 7px 0 0;
-  font-size: 20px;
+  font-size: 16px;
   font-weight: 450;
   letter-spacing: -0.03em;
 }
@@ -406,7 +406,7 @@ input {
 }
 
 .data-editor > p {
-  margin: 17px 0 20px;
+  margin: 12px 0 14px;
   color: rgba(201, 216, 221, 0.34);
   font-size: 10px;
   line-height: 1.7;
@@ -415,7 +415,7 @@ input {
 .curve-editor {
   display: block;
   width: 100%;
-  height: 240px;
+  height: 176px;
   border: 1px solid rgba(205, 220, 226, 0.09);
   background: linear-gradient(180deg, rgba(198, 219, 227, 0.025), rgba(198, 219, 227, 0.006));
   cursor: crosshair;
@@ -425,7 +425,7 @@ input {
 .curve-stats {
   display: flex;
   justify-content: space-between;
-  margin-top: 11px;
+  margin: 9px 0;
   color: rgba(201, 216, 221, 0.3);
   font-family: var(--font-geist-mono), monospace;
   font-size: 8px;
@@ -439,16 +439,16 @@ input {
 
 .data-grid {
   display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 7px;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 5px;
 }
 
 .data-grid label {
   display: grid;
-  grid-template-columns: 36px 1fr;
+  grid-template-columns: 30px 1fr;
   align-items: center;
-  gap: 8px;
-  padding: 7px 8px;
+  gap: 4px;
+  padding: 5px 6px;
   border: 1px solid rgba(205, 220, 226, 0.075);
   background: rgba(210, 227, 233, 0.018);
 }
@@ -456,7 +456,7 @@ input {
 .data-grid span {
   color: rgba(199, 216, 222, 0.24);
   font-family: var(--font-geist-mono), monospace;
-  font-size: 7px;
+  font-size: 6px;
 }
 
 .data-grid input {
@@ -466,7 +466,7 @@ input {
   color: rgba(226, 234, 237, 0.75);
   background: transparent;
   font-family: var(--font-geist-mono), monospace;
-  font-size: 10px;
+  font-size: 9px;
 }
 
 .apply-data {

@@ -128,7 +128,7 @@ const floorFragmentShader = /* glsl */ `
     color += vec3(0.032, 0.049, 0.056) * slope * waterField;
     color += vec3(0.034, 0.052, 0.060) * waveContour * (0.65 + slope) * waterField;
     color += vec3(0.018, 0.029, 0.034) * readableCrest * waterField;
-    color += vec3(0.016, 0.027, 0.032) * pools * (0.4 + slope * 2.2);
+    color += vec3(0.032, 0.057, 0.068) * pools * (0.65 + slope * 2.8);
     color *= edgeFade;
     gl_FragColor = vec4(color, 1.0);
   }
@@ -322,13 +322,13 @@ function makeAxis(data: number[]) {
   const lineMaterial = new THREE.LineBasicMaterial({
     color: 0xc2d0d6,
     transparent: true,
-    opacity: 0.62,
+    opacity: 0.76,
     toneMapped: false,
   });
   const faintMaterial = new THREE.LineBasicMaterial({
     color: 0xaabcc4,
     transparent: true,
-    opacity: 0.26,
+    opacity: 0.36,
     toneMapped: false,
   });
 
@@ -531,6 +531,13 @@ function RainCurveEditor({
       context.moveTo(x, padding.top);
       context.lineTo(x, rect.height - padding.bottom);
       context.stroke();
+    }
+    context.fillStyle = "rgba(204, 220, 226, 0.36)";
+    context.font = "9px Consolas, monospace";
+    context.textAlign = "center";
+    context.textBaseline = "middle";
+    for (let hour = 0; hour < 24; hour += 2) {
+      context.fillText(`${String(hour).padStart(2, "0")}:00`, xFor(hour), rect.height - 10);
     }
 
     const gradient = context.createLinearGradient(0, padding.top, 0, rect.height - padding.bottom);
@@ -1025,6 +1032,27 @@ export default function RainExperience() {
         <div className="curve-stats">
           <span>峰值 <b>{Math.max(...draft).toFixed(1)}</b> mm/h</span>
           <span>均值 <b>{(draft.reduce((sum, value) => sum + value, 0) / draft.length).toFixed(1)}</b> mm/h</span>
+        </div>
+        <div className="data-grid" aria-label="逐小时降雨数值">
+          {draft.map((value, index) => (
+            <label key={index}>
+              <span>{String(index).padStart(2, "0")}:00</span>
+              <input
+                type="number"
+                min="0"
+                max="14"
+                step="0.1"
+                value={value}
+                onChange={(event) => {
+                  const next = [...draft];
+                  next[index] = Math.min(14, Math.max(0, Number(event.target.value)));
+                  setDraft(next);
+                }}
+                onBlur={() => setRainfall(draft)}
+                aria-label={`${String(index).padStart(2, "0")}:00 降雨量`}
+              />
+            </label>
+          ))}
         </div>
         <button
           type="button"
