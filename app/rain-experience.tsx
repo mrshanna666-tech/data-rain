@@ -335,7 +335,7 @@ function makeTextSprite(
     map: texture,
     transparent: true,
     depthWrite: false,
-    depthTest: true,
+    depthTest: false,
     toneMapped: false,
   });
   const sprite = new THREE.Sprite(material);
@@ -349,15 +349,19 @@ function makeTextSprite(
 function makeAxis(data: number[]) {
   const group = new THREE.Group();
   const lineMaterial = new THREE.LineBasicMaterial({
-    color: 0xc2d0d6,
-    transparent: true,
-    opacity: 0.92,
+    color: 0xf1f7fa,
+    transparent: false,
+    opacity: 1,
+    depthTest: false,
+    depthWrite: false,
     toneMapped: false,
   });
   const faintMaterial = new THREE.LineBasicMaterial({
-    color: 0xaabcc4,
+    color: 0xd5e6ed,
     transparent: true,
-    opacity: 0.52,
+    opacity: 0.78,
+    depthTest: false,
+    depthWrite: false,
     toneMapped: false,
   });
 
@@ -374,7 +378,7 @@ function makeAxis(data: number[]) {
     addLine([new THREE.Vector3(x, 0, 2.66), new THREE.Vector3(x, 0, 2.88)], faintMaterial);
     const time = makeTextSprite(`${String(i * 4).padStart(2, "0")}:00`, {
       size: 30,
-      opacity: 0.9,
+      opacity: 1,
       mono: true,
     });
     time.position.set(x, -0.29, 3.02);
@@ -385,21 +389,21 @@ function makeAxis(data: number[]) {
     addLine([new THREE.Vector3(-13.1, y, 2.65), new THREE.Vector3(-12.85, y, 2.65)], faintMaterial);
     const value = makeTextSprite((i * 4.3).toFixed(1), {
       size: 28,
-      opacity: 0.84,
+      opacity: 0.96,
       mono: true,
     });
     value.position.set(-13.52, y, 2.7);
     group.add(value);
   }
 
-  const title = makeTextSprite("降雨强度", { size: 58, opacity: 0.92 });
+  const title = makeTextSprite("降雨强度", { size: 58, opacity: 1 });
   title.position.set(-13.15, 10.45, 2.65);
   title.scale.multiplyScalar(1.55);
   group.add(title);
-  const subtitle = makeTextSprite("每小时降水", { size: 34, opacity: 0.84 });
+  const subtitle = makeTextSprite("每小时降水", { size: 34, opacity: 0.96 });
   subtitle.position.set(-13.15, 9.68, 2.65);
   group.add(subtitle);
-  const unit = makeTextSprite("毫米 / 小时", { size: 27, opacity: 0.68 });
+  const unit = makeTextSprite("毫米 / 小时", { size: 27, opacity: 0.86 });
   unit.position.set(-13.45, 8.82, 2.65);
   group.add(unit);
 
