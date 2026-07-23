@@ -201,6 +201,25 @@ const impactFragmentShader = /* glsl */ `
   }
 `;
 
+const lightPoolVertexShader = /* glsl */ `
+  varying vec2 vUv;
+  void main() {
+    vUv = uv;
+    gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+  }
+`;
+
+const lightPoolFragmentShader = /* glsl */ `
+  varying vec2 vUv;
+  void main() {
+    vec2 p = vUv - 0.5;
+    float radius = length(p) * 2.0;
+    float halo = smoothstep(1.0, 0.0, radius);
+    halo = halo * halo * (3.0 - 2.0 * halo);
+    gl_FragColor = vec4(vec3(0.11, 0.33, 0.46), halo * 0.16);
+  }
+`;
+
 function weightedHour(data: number[], total: number) {
   let marker = Math.random() * total;
   for (let i = 0; i < data.length; i++) {
@@ -345,7 +364,7 @@ function makeAxis(data: number[]) {
     addLine([new THREE.Vector3(x, 0, 2.66), new THREE.Vector3(x, 0, 2.88)], faintMaterial);
     const time = makeTextSprite(`${String(i * 4).padStart(2, "0")}:00`, {
       size: 30,
-      opacity: 0.62,
+      opacity: 0.78,
       mono: true,
     });
     time.position.set(x, -0.29, 3.02);
@@ -356,7 +375,7 @@ function makeAxis(data: number[]) {
     addLine([new THREE.Vector3(-13.1, y, 2.65), new THREE.Vector3(-12.85, y, 2.65)], faintMaterial);
     const value = makeTextSprite((i * 4.3).toFixed(1), {
       size: 28,
-      opacity: 0.58,
+      opacity: 0.72,
       mono: true,
     });
     value.position.set(-13.52, y, 2.7);
@@ -510,7 +529,7 @@ function RainCurveEditor({
     if (!context) return;
     context.setTransform(dpr, 0, 0, dpr, 0, 0);
     context.clearRect(0, 0, rect.width, rect.height);
-    const padding = { left: 28, right: 12, top: 14, bottom: 25 };
+    const padding = { left: 28, right: 12, top: 14, bottom: 23 };
     const plotWidth = rect.width - padding.left - padding.right;
     const plotHeight = rect.height - padding.top - padding.bottom;
     const xFor = (index: number) => padding.left + (index / (values.length - 1)) * plotWidth;
@@ -533,11 +552,11 @@ function RainCurveEditor({
       context.stroke();
     }
     context.fillStyle = "rgba(204, 220, 226, 0.36)";
-    context.font = "9px Consolas, monospace";
+    context.font = "7px Consolas, monospace";
     context.textAlign = "center";
     context.textBaseline = "middle";
     for (let hour = 0; hour < 24; hour += 2) {
-      context.fillText(`${String(hour).padStart(2, "0")}:00`, xFor(hour), rect.height - 10);
+      context.fillText(String(hour).padStart(2, "0"), xFor(hour), rect.height - 8);
     }
 
     const gradient = context.createLinearGradient(0, padding.top, 0, rect.height - padding.bottom);
@@ -578,12 +597,6 @@ function RainCurveEditor({
       context.fill();
     });
 
-    context.fillStyle = "rgba(202, 218, 224, 0.28)";
-    context.font = "8px Consolas, monospace";
-    context.textAlign = "center";
-    ["00", "04", "08", "12", "16", "20", "24"].forEach((label, index) => {
-      context.fillText(label, padding.left + (index / 6) * plotWidth, rect.height - 7);
-    });
     context.textAlign = "right";
     context.fillText("14", padding.left - 7, padding.top + 3);
     context.fillText("7", padding.left - 7, padding.top + plotHeight / 2 + 3);
@@ -659,6 +672,7 @@ export default function RainExperience() {
   const [rainfall, setRainfall] = useState(initialRainfall);
   const [draft, setDraft] = useState(initialRainfall);
   const [editorOpen, setEditorOpen] = useState(false);
+  const [numbersOpen, setNumbersOpen] = useState(false);
   const [soundOn, setSoundOn] = useState(false);
   const [axesVisible, setAxesVisible] = useState(false);
   const [controlsVisible, setControlsVisible] = useState(true);
@@ -823,6 +837,29 @@ export default function RainExperience() {
     floor.position.y = -0.035;
     scene.add(floor);
 
+    // Visible, low-energy pools matching the reference's isolated blue-white
+    // illuminations. They sit on the surface and remain subtle under the rain.
+    const lightPoolGeometry = new THREE.CircleGeometry(1, 64);
+    const lightPoolMaterial = new THREE.ShaderMaterial({
+      vertexShader: lightPoolVertexShader,
+      fragmentShader: lightPoolFragmentShader,
+      transparent: true,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+    });
+    const lightPools = [
+      [-8.8, -4.8, 3.0],
+      [1.6, 5.6, 2.35],
+      [10.2, -1.7, 2.7],
+    ].map(([x, z, scale]) => {
+      const pool = new THREE.Mesh(lightPoolGeometry, lightPoolMaterial);
+      pool.rotation.x = -Math.PI / 2;
+      pool.position.set(x, -0.02, z);
+      pool.scale.setScalar(scale);
+      scene.add(pool);
+      return pool;
+    });
+
     const axis = makeAxis(rainfall);
     axis.visible = axesVisible;
     axisGroupRef.current = axis;
@@ -948,6 +985,9 @@ export default function RainExperience() {
       gpuCompute.dispose();
       floor.geometry.dispose();
       (floor.material as THREE.Material).dispose();
+      lightPools.forEach((pool) => scene.remove(pool));
+      lightPoolGeometry.dispose();
+      lightPoolMaterial.dispose();
       axis.traverse((child) => {
         if (child instanceof THREE.Line) {
           child.geometry.dispose();
@@ -1033,27 +1073,37 @@ export default function RainExperience() {
           <span>峰值 <b>{Math.max(...draft).toFixed(1)}</b> mm/h</span>
           <span>均值 <b>{(draft.reduce((sum, value) => sum + value, 0) / draft.length).toFixed(1)}</b> mm/h</span>
         </div>
-        <div className="data-grid" aria-label="逐小时降雨数值">
-          {draft.map((value, index) => (
-            <label key={index}>
-              <span>{String(index).padStart(2, "0")}:00</span>
-              <input
-                type="number"
-                min="0"
-                max="14"
-                step="0.1"
-                value={value}
-                onChange={(event) => {
-                  const next = [...draft];
-                  next[index] = Math.min(14, Math.max(0, Number(event.target.value)));
-                  setDraft(next);
-                }}
-                onBlur={() => setRainfall(draft)}
-                aria-label={`${String(index).padStart(2, "0")}:00 降雨量`}
-              />
-            </label>
-          ))}
-        </div>
+        <button
+          type="button"
+          className="numbers-toggle"
+          onClick={() => setNumbersOpen((value) => !value)}
+          aria-expanded={numbersOpen}
+        >
+          {numbersOpen ? "收起数值" : "数字编辑"}
+        </button>
+        {numbersOpen && (
+          <div className="data-grid" aria-label="逐小时降雨数值">
+            {draft.map((value, index) => (
+              <label key={index}>
+                <span>{String(index).padStart(2, "0")}:00</span>
+                <input
+                  type="number"
+                  min="0"
+                  max="14"
+                  step="0.1"
+                  value={value}
+                  onChange={(event) => {
+                    const next = [...draft];
+                    next[index] = Math.min(14, Math.max(0, Number(event.target.value)));
+                    setDraft(next);
+                  }}
+                  onBlur={() => setRainfall(draft)}
+                  aria-label={`${String(index).padStart(2, "0")}:00 降雨量`}
+                />
+              </label>
+            ))}
+          </div>
+        )}
         <button
           type="button"
           className="apply-data"
