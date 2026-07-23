@@ -1,98 +1,73 @@
-# vinext-starter
+# DATA RAIN — 实时降雨数据可视化
 
-A clean full-stack starter running on
-[vinext](https://github.com/cloudflare/vinext), with optional Cloudflare D1 and
-Drizzle support.
+一个由降雨时间序列驱动的沉浸式 WebGL 场景。24 小时降雨数据不只是图表：它会实时改变雨幕高度、粒子密度、水面落点、银白体积光和环境雨声。
 
-## Prerequisites
+在线体验：[data-rain-storm.mrshanna666.chatgpt.site](https://data-rain-storm.mrshanna666.chatgpt.site)
 
-- Node.js `>=22.13.0`
+## 主要体验
 
-## Quick Start
+- 以 00:00–24:00 的逐小时数据生成三维雨幕
+- 鼠标移动形成风场，实时拨动雨滴并扰动水面
+- 可旋转、缩放和查看雨幕背面，编辑数据时保持当前镜头
+- GPU 水面波传播与多雨滴干涉，涟漪按能量衰减扩散至整片水面
+- 降雨峰值自动生成三束银白光柱，位置、高度和宽度随数据变化
+- 曲线拖拽和数字输入两种编辑方式，修改后场景即时更新
+- 程序化连续雨声，音量随平均降雨强度变化
+- 根据设备能力和实时帧率动态调整雨滴数量
+
+## 技术实现
+
+### WebGL 与自定义着色器
+
+场景基于 Three.js。雨滴使用 `BufferGeometry` 和自定义 `ShaderMaterial` 批量绘制为线段，顶点着色器负责下落、长度、风偏和鼠标扰动，片元着色器负责银白高光与透明度。相比为每个雨滴创建独立对象，这种方式能在一次几何提交中渲染数万条雨滴。
+
+### GPU 水面波模拟
+
+水面使用 `GPUComputationRenderer` 在浮点纹理上执行逐帧计算。每个雨滴落点写入冲击位置、时间和能量；计算着色器传播高度场并施加阻尼，多个波源自然叠加形成干涉。渲染阶段从高度纹理采样邻域差分，生成水面的位移、法线和银色反射。
+
+这是一套实时、受物理规律启发的离散波动模拟，重点在稳定帧率下表现传播、叠加和能量衰减，而不是离线流体求解。
+
+### 数据驱动的雨幕与灯光
+
+每个小时对应一列雨幕，降雨量控制雨幕高度和落点权重。系统选取当前数据中最大的三个峰值，为它们生成加色混合的银白光柱；数据编辑后，光柱的位置、长度和扩散宽度随之重建。
+
+### 自适应性能
+
+启动时会参考 CPU 核心数、设备内存和移动端状态选择 `ULTRA`、`HIGH`、`BALANCED` 或 `ECO` 档位。运行中持续采样 FPS：低帧率时减少绘制雨滴，高帧率时逐步增加，范围约为 10,000–56,000 条，同时控制 DPR 和水面模拟分辨率。
+
+### 交互、镜头与声音
+
+- `OrbitControls` 提供带阻尼的旋转和缩放
+- Raycaster 将鼠标位置投射到水面，驱动局部雨滴偏移与波纹冲击
+- React 状态连接曲线编辑器、数字编辑器和 WebGL 场景
+- Web Audio API 程序化合成白噪声、低频棕噪声和离散雨滴声，无需循环音频素材
+- ACES Filmic 色调映射、雾效和 Unreal Bloom 统一暗色银白视觉
+
+## 技术栈
+
+- React 19、TypeScript、Next.js 16
+- Three.js、WebGL、GLSL
+- GPUComputationRenderer
+- Vinext、Vite、Cloudflare 运行时
+- Web Audio API
+
+## 本地运行
+
+需要 Node.js `>=22.13.0`。
 
 ```bash
 npm install
 npm run dev
+```
+
+生产构建验证：
+
+```bash
 npm run build
 ```
 
-This starter does not use `wrangler.jsonc`.
+## 主要代码
 
-## Included Shape
-
-- edit site code under `app/`
-- `.openai/hosting.json` declares optional Sites D1 and R2 bindings
-- `vite.config.ts` simulates declared bindings for local development
-- `db/schema.ts` starts intentionally empty
-- `examples/d1/` contains an optional D1 example surface
-- `drizzle.config.ts` supports local migration generation when needed
-
-## Workspace Auth Headers
-
-OpenAI workspace sites can read the current user's email from
-`oai-authenticated-user-email`.
-
-SIWC-authenticated workspace sites may also receive
-`oai-authenticated-user-full-name` when the user's SIWC profile has a non-empty
-`name` claim. The full-name value is percent-encoded UTF-8 and is accompanied by
-`oai-authenticated-user-full-name-encoding: percent-encoded-utf-8`.
-
-Treat the full name as optional and fall back to email when it is absent:
-
-```tsx
-import { headers } from "next/headers";
-
-export default async function Home() {
-  const requestHeaders = await headers();
-  const email = requestHeaders.get("oai-authenticated-user-email");
-  const encodedFullName = requestHeaders.get("oai-authenticated-user-full-name");
-  const fullName =
-    encodedFullName &&
-    requestHeaders.get("oai-authenticated-user-full-name-encoding") ===
-      "percent-encoded-utf-8"
-      ? decodeURIComponent(encodedFullName)
-      : null;
-
-  const displayName = fullName ?? email;
-  // ...
-}
-```
-
-## Optional Dispatch-Owned ChatGPT Sign-In
-
-Import the ready-to-use helpers from `app/chatgpt-auth.ts` when the site needs
-optional or required ChatGPT sign-in:
-
-- Use `getChatGPTUser()` for optional signed-in UI.
-- Use `requireChatGPTUser(returnTo)` for server-rendered pages that should send
-  anonymous visitors through Sign in with ChatGPT.
-- Use `chatGPTSignInPath(returnTo)` and `chatGPTSignOutPath(returnTo)` for
-  browser links or actions.
-- Pass a same-origin relative `returnTo` path for the destination after sign-in
-  or sign-out. The helper validates and safely encodes it.
-- Mark protected pages with `export const dynamic = "force-dynamic"` because
-  they depend on per-request identity headers.
-
-Dispatch owns `/signin-with-chatgpt`, `/signout-with-chatgpt`, `/callback`, the
-OAuth cookies, and identity header injection. Do not implement app routes for
-those reserved paths. Routes that do not import and call the helper remain
-anonymous-compatible.
-
-SIWC establishes identity only; it does not prove workspace membership. Use the
-Sites hosting platform's access policy controls for workspace-wide restrictions,
-or enforce explicit server-side membership or allowlist checks.
-
-Use SIWC for account pages, user-specific dashboards, saved records, and write
-actions tied to the current ChatGPT user. Leave public content anonymous.
-
-## Useful Commands
-
-- `npm run dev`: start local development
-- `npm run build`: verify the vinext build output
-- `npm test`: build the starter and verify its rendered loading skeleton
-- `npm run db:generate`: generate Drizzle migrations after schema changes
-
-## Learn More
-
-- [vinext Documentation](https://github.com/cloudflare/vinext)
-- [Drizzle D1 Guide](https://orm.drizzle.team/docs/get-started/d1-new)
+- `app/rain-experience.tsx`：场景、着色器、GPU 水面、交互、音频和数据编辑
+- `app/globals.css`：极简控制界面与响应式布局
+- `.openai/hosting.json`：当前 Sites 部署配置
