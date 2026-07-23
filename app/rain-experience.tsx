@@ -102,7 +102,10 @@ const floorFragmentShader = /* glsl */ `
     vec3 reflected = reflect(-viewDirection, normal);
     float specular = pow(max(dot(reflect(-lightDirection, normal), viewDirection), 0.0), 78.0);
     float slope = clamp(length(normal.xz) * 3.7, 0.0, 1.0);
-    float waveContour = smoothstep(0.0007, 0.010, vWave);
+    // Keep the crest visible from a frontal camera too. This is derived from
+    // curvature of the simulated heightfield, not a painted ring texture.
+    float waveContour = smoothstep(0.00025, 0.0035, vWave);
+    float readableCrest = smoothstep(0.018, 0.09, slope);
     float edgeFade = smoothstep(0.0, 0.08, vUv.x)
       * smoothstep(0.0, 0.08, 1.0 - vUv.x)
       * smoothstep(0.0, 0.12, vUv.y)
@@ -115,7 +118,8 @@ const floorFragmentShader = /* glsl */ `
     color += reflectedSky * fresnel * 0.68 * strip;
     color += vec3(0.25, 0.31, 0.34) * specular * strip;
     color += vec3(0.032, 0.049, 0.056) * slope * strip;
-    color += vec3(0.026, 0.039, 0.045) * waveContour * (0.35 + slope) * strip;
+    color += vec3(0.034, 0.052, 0.060) * waveContour * (0.65 + slope) * strip;
+    color += vec3(0.018, 0.029, 0.034) * readableCrest * strip;
     color *= edgeFade;
     gl_FragColor = vec4(color, 1.0);
   }
@@ -138,16 +142,16 @@ const waterComputeShader = /* glsl */ `
     // The velocity relaxes towards the four-neighbour average, then advances the
     // height. This preserves a clean circular wavefront instead of noisy pulses.
     float average = (north + south + east + west) * 0.25;
-    float nextVelocity = (value.y + (average - value.x) * 2.0) * 0.995;
+    float nextVelocity = (value.y + (average - value.x) * 2.0) * 0.9982;
     float nextHeight = value.x + nextVelocity;
 
     vec2 world = (uv - 0.5) * vec2(48.0, 22.0);
     float splat = 0.0;
     for (int i = 0; i < 16; i++) {
       float age = uTime - uImpacts[i].z;
-      float live = step(0.0, age) * (1.0 - step(0.019, age));
+      float live = step(0.0, age) * (1.0 - step(0.014, age));
       vec2 delta = world - uImpacts[i].xy;
-      float radial = max(0.0, 1.0 - length(delta) / 0.92);
+      float radial = max(0.0, 1.0 - length(delta) / 0.62);
       radial = 0.5 - cos(radial * 3.14159265) * 0.5;
       splat += radial * uImpacts[i].w * live;
     }
@@ -884,14 +888,14 @@ export default function RainExperience() {
         pointerSmooth.x * 0.34 + Math.sin(elapsed * 0.17) * 0.035,
         pointerSmooth.y * 0.12,
       );
-      const rainRate = 8 + average * 2.8;
+      const rainRate = 3 + average * 0.85;
       const rainTotal = rainfall.reduce((sum, value) => sum + Math.max(0.08, value), 0);
       while (elapsed - lastRainImpact > 1 / rainRate) {
         lastRainImpact += 1 / rainRate;
         const hour = weightedHour(rainfall, rainTotal);
         const x = -12.2 + (hour / (rainfall.length - 1)) * 24.4 + (Math.random() - 0.5) * 0.5;
-        const z = (Math.random() - 0.5) * 5.4;
-        const strength = 0.008 + Math.min(1.2, rainfall[hour] / 10) * 0.012;
+        const z = (Math.random() - 0.5) * 3.8;
+        const strength = 0.011 + Math.min(1.2, rainfall[hour] / 10) * 0.014;
         waterImpacts[impactCursor].set(x, z, lastRainImpact, strength);
         impactCursor = (impactCursor + 1) % waterImpacts.length;
       }
