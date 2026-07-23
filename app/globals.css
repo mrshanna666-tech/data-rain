@@ -176,14 +176,22 @@ input {
   background: rgba(210, 223, 228, 0.25);
 }
 
-.edit-trigger {
+.scene-actions {
   position: absolute;
   top: 24px;
   right: 28px;
-  padding: 8px 11px;
+  display: flex;
   border: 1px solid rgba(213, 226, 231, 0.1);
-  color: rgba(217, 228, 232, 0.3);
   background: rgba(3, 6, 7, 0.3);
+}
+
+.edit-trigger,
+.sound-trigger {
+  padding: 8px 11px;
+  border: 0;
+  border-left: 1px solid rgba(213, 226, 231, 0.1);
+  color: rgba(217, 228, 232, 0.3);
+  background: transparent;
   font-family: var(--font-geist-mono), monospace;
   font-size: 8px;
   letter-spacing: 0.08em;
@@ -192,10 +200,70 @@ input {
 }
 
 .edit-trigger:hover,
-.edit-trigger:focus-visible {
-  border-color: rgba(217, 229, 233, 0.28);
+.edit-trigger:focus-visible,
+.sound-trigger:hover,
+.sound-trigger:focus-visible {
   color: rgba(230, 236, 238, 0.66);
+  background: rgba(215, 229, 234, 0.025);
   outline: none;
+}
+
+.sound-trigger {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  border-left: 0;
+}
+
+.sound-trigger.active {
+  color: rgba(205, 224, 231, 0.67);
+}
+
+.sound-bars {
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+  width: 11px;
+  height: 8px;
+}
+
+.sound-bars i {
+  display: block;
+  width: 1px;
+  height: 3px;
+  background: currentColor;
+}
+
+.sound-bars i:nth-child(2) {
+  height: 7px;
+}
+
+.sound-bars i:nth-child(3) {
+  height: 5px;
+}
+
+.sound-trigger.active .sound-bars i {
+  animation: rain-audio 0.72s ease-in-out infinite alternate;
+}
+
+.sound-trigger.active .sound-bars i:nth-child(2) {
+  animation-delay: -0.26s;
+}
+
+.sound-trigger.active .sound-bars i:nth-child(3) {
+  animation-delay: -0.49s;
+}
+
+.interaction-hint {
+  position: absolute;
+  left: 50%;
+  bottom: 22px;
+  transform: translateX(-50%);
+  color: rgba(202, 216, 222, 0.17);
+  font-family: var(--font-geist-mono), monospace;
+  font-size: 7px;
+  letter-spacing: 0.08em;
+  pointer-events: none;
 }
 
 .data-editor {
@@ -342,9 +410,13 @@ input {
     bottom: 14px;
   }
 
-  .edit-trigger {
+  .scene-actions {
     top: 16px;
     right: 16px;
+  }
+
+  .interaction-hint {
+    display: none;
   }
 }
 
@@ -352,4 +424,13 @@ input {
   .data-editor {
     transition: none;
   }
+
+  .sound-trigger.active .sound-bars i {
+    animation: none;
+  }
+}
+
+@keyframes rain-audio {
+  from { transform: scaleY(0.45); }
+  to { transform: scaleY(1); }
 }
