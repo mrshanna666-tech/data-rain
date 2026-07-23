@@ -93,8 +93,9 @@ const floorFragmentShader = /* glsl */ `
   varying float vWave;
 
   void main() {
-    vec2 p = vWorld.xz;
-    float strip = smoothstep(3.8, 2.7, abs(p.y));
+    // The whole mesh is the water surface. Do not crop it to the rain curtain:
+    // energy is allowed to travel across the complete simulation field.
+    float waterField = 1.0;
     vec3 normal = normalize(vNormal);
     vec3 viewDirection = normalize(cameraPosition - vWorld);
     vec3 lightDirection = normalize(vec3(-0.42, 1.0, 0.38));
@@ -114,12 +115,12 @@ const floorFragmentShader = /* glsl */ `
     vec3 color = base;
     vec3 reflectedSky = mix(vec3(0.001, 0.003, 0.004), vec3(0.042, 0.069, 0.079),
       smoothstep(-0.15, 0.8, reflected.y));
-    color += vec3(0.018, 0.026, 0.031) * fresnel * strip;
-    color += reflectedSky * fresnel * 0.68 * strip;
-    color += vec3(0.25, 0.31, 0.34) * specular * strip;
-    color += vec3(0.032, 0.049, 0.056) * slope * strip;
-    color += vec3(0.034, 0.052, 0.060) * waveContour * (0.65 + slope) * strip;
-    color += vec3(0.018, 0.029, 0.034) * readableCrest * strip;
+    color += vec3(0.018, 0.026, 0.031) * fresnel * waterField;
+    color += reflectedSky * fresnel * 0.68 * waterField;
+    color += vec3(0.25, 0.31, 0.34) * specular * waterField;
+    color += vec3(0.032, 0.049, 0.056) * slope * waterField;
+    color += vec3(0.034, 0.052, 0.060) * waveContour * (0.65 + slope) * waterField;
+    color += vec3(0.018, 0.029, 0.034) * readableCrest * waterField;
     color *= edgeFade;
     gl_FragColor = vec4(color, 1.0);
   }
