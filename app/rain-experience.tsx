@@ -142,7 +142,7 @@ const waterComputeShader = /* glsl */ `
     // The velocity relaxes towards the four-neighbour average, then advances the
     // height. This preserves a clean circular wavefront instead of noisy pulses.
     float average = (north + south + east + west) * 0.25;
-    float nextVelocity = (value.y + (average - value.x) * 2.0) * 0.9982;
+    float nextVelocity = (value.y + (average - value.x) * 0.16) * 0.9992;
     float nextHeight = value.x + nextVelocity;
 
     vec2 world = (uv - 0.5) * vec2(48.0, 22.0);
@@ -860,7 +860,7 @@ export default function RainExperience() {
     const onPointerDown = (event: PointerEvent) => {
       updatePointerWorld(event);
       const elapsed = clock.getElapsedTime();
-      waterImpacts[impactCursor].set(mouseWorld.x, mouseWorld.y, elapsed, 0.055);
+      waterImpacts[impactCursor].set(mouseWorld.x, mouseWorld.y, elapsed, 0.034);
       impactCursor = (impactCursor + 1) % waterImpacts.length;
     };
     const onResize = () => {
@@ -888,14 +888,16 @@ export default function RainExperience() {
         pointerSmooth.x * 0.34 + Math.sin(elapsed * 0.17) * 0.035,
         pointerSmooth.y * 0.12,
       );
-      const rainRate = 3 + average * 0.85;
+      const rainRate = 1.7 + average * 0.28;
       const rainTotal = rainfall.reduce((sum, value) => sum + Math.max(0.08, value), 0);
       while (elapsed - lastRainImpact > 1 / rainRate) {
         lastRainImpact += 1 / rainRate;
         const hour = weightedHour(rainfall, rainTotal);
         const x = -12.2 + (hour / (rainfall.length - 1)) * 24.4 + (Math.random() - 0.5) * 0.5;
-        const z = (Math.random() - 0.5) * 3.8;
-        const strength = 0.011 + Math.min(1.2, rainfall[hour] / 10) * 0.014;
+        // The rain field is a whole water plane, not just a thin strip beneath
+        // the data curtain: every hour contributes impacts across its depth.
+        const z = (Math.random() - 0.5) * 20.0;
+        const strength = 0.009 + Math.min(1.2, rainfall[hour] / 10) * 0.012;
         waterImpacts[impactCursor].set(x, z, lastRainImpact, strength);
         impactCursor = (impactCursor + 1) % waterImpacts.length;
       }
