@@ -5,6 +5,7 @@ import * as THREE from "three";
 import { EffectComposer } from "three/examples/jsm/postprocessing/EffectComposer.js";
 import { RenderPass } from "three/examples/jsm/postprocessing/RenderPass.js";
 import { UnrealBloomPass } from "three/examples/jsm/postprocessing/UnrealBloomPass.js";
+import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 
 const initialRainfall = [
   2.1, 3.8, 9.9, 11.9, 0.0, 1.4, 0.7, 0.6, 4.1, 7.8, 6.6, 2.4,
@@ -61,9 +62,36 @@ const rainFragmentShader = /* glsl */ `
 `;
 
 const floorVertexShader = /* glsl */ `
+  uniform float uTime;
+  uniform vec2 uMouseWorld;
+  uniform float uMouseForce;
+  uniform vec3 uRipples[4];
   varying vec3 vWorld;
+
+  float clickWave(vec2 p) {
+    float wave = 0.0;
+    for (int i = 0; i < 4; i++) {
+      float life = uTime - uRipples[i].z;
+      float enabled = step(0.0, life) * (1.0 - step(2.2, life));
+      float d = length(p - uRipples[i].xy);
+      float radius = life * 2.15;
+      wave += sin((d - radius) * 17.0)
+        * exp(-abs(d - radius) * 3.8)
+        * exp(-life * 1.2)
+        * enabled;
+    }
+    return wave;
+  }
+
   void main() {
     vec4 world = modelMatrix * vec4(position, 1.0);
+    float strip = smoothstep(3.8, 2.7, abs(world.z));
+    float micro = sin(world.x * 3.7 + uTime * 2.2)
+      * sin(world.z * 4.4 - uTime * 1.7) * 0.004;
+    float mouseD = length(world.xz - uMouseWorld);
+    float mouseWave = sin(mouseD * 9.0 - uTime * 5.0)
+      * exp(-mouseD * 1.8) * uMouseForce * 0.012;
+    world.y += (clickWave(world.xz) * 0.065 + micro + mouseWave) * strip;
     vWorld = world.xyz;
     gl_Position = projectionMatrix * viewMatrix * world;
   }
@@ -224,6 +252,44 @@ function makeImpactGeometry(count: number, data: number[]) {
   return geometry;
 }
 
+function makeTextSprite(
+  text: string,
+  options: { size?: number; opacity?: number; mono?: boolean } = {},
+) {
+  const size = options.size ?? 54;
+  const canvas = document.createElement("canvas");
+  const context = canvas.getContext("2d")!;
+  const font = `${options.mono ? "400" : "500"} ${size}px ${
+    options.mono ? "Consolas, monospace" : '"Microsoft YaHei", sans-serif'
+  }`;
+  context.font = font;
+  const metrics = context.measureText(text);
+  const padding = 18;
+  canvas.width = Math.ceil(metrics.width + padding * 2);
+  canvas.height = Math.ceil(size * 1.55);
+  const draw = canvas.getContext("2d")!;
+  draw.font = font;
+  draw.textAlign = "center";
+  draw.textBaseline = "middle";
+  draw.fillStyle = `rgba(224, 231, 234, ${options.opacity ?? 0.56})`;
+  draw.fillText(text, canvas.width / 2, canvas.height / 2);
+  const texture = new THREE.CanvasTexture(canvas);
+  texture.colorSpace = THREE.SRGBColorSpace;
+  texture.minFilter = THREE.LinearFilter;
+  const material = new THREE.SpriteMaterial({
+    map: texture,
+    transparent: true,
+    depthWrite: false,
+    depthTest: true,
+  });
+  const sprite = new THREE.Sprite(material);
+  const aspect = canvas.width / canvas.height;
+  const height = size >= 50 ? 0.52 : 0.3;
+  sprite.scale.set(height * aspect, height, 1);
+  sprite.userData.texture = texture;
+  return sprite;
+}
+
 function makeAxis(data: number[]) {
   const group = new THREE.Group();
   const lineMaterial = new THREE.LineBasicMaterial({
@@ -248,11 +314,36 @@ function makeAxis(data: number[]) {
   for (let i = 0; i <= 6; i++) {
     const x = -12.2 + (i / 6) * 24.4;
     addLine([new THREE.Vector3(x, 0, 2.66), new THREE.Vector3(x, 0, 2.88)], faintMaterial);
+    const time = makeTextSprite(`${String(i * 4).padStart(2, "0")}:00`, {
+      size: 30,
+      opacity: 0.34,
+      mono: true,
+    });
+    time.position.set(x, -0.29, 3.02);
+    group.add(time);
   }
   for (let i = 1; i <= 3; i++) {
     const y = i * 2.8;
     addLine([new THREE.Vector3(-13.1, y, 2.65), new THREE.Vector3(-12.85, y, 2.65)], faintMaterial);
+    const value = makeTextSprite((i * 4.3).toFixed(1), {
+      size: 28,
+      opacity: 0.34,
+      mono: true,
+    });
+    value.position.set(-13.52, y, 2.7);
+    group.add(value);
   }
+
+  const title = makeTextSprite("降雨强度", { size: 58, opacity: 0.78 });
+  title.position.set(-13.15, 10.45, 2.65);
+  title.scale.multiplyScalar(1.55);
+  group.add(title);
+  const subtitle = makeTextSprite("每小时降水", { size: 34, opacity: 0.48 });
+  subtitle.position.set(-13.15, 9.68, 2.65);
+  group.add(subtitle);
+  const unit = makeTextSprite("毫米 / 小时", { size: 27, opacity: 0.28 });
+  unit.position.set(-13.45, 8.82, 2.65);
+  group.add(unit);
 
   const curvePoints = data.map((value, index) =>
     new THREE.Vector3(
@@ -376,12 +467,15 @@ function createRainAudio(): RainAudioController {
 export default function RainExperience() {
   const hostRef = useRef<HTMLDivElement>(null);
   const audioRef = useRef<RainAudioController | null>(null);
+  const axisGroupRef = useRef<THREE.Group | null>(null);
+  const resetViewRef = useRef<(() => void) | null>(null);
   const [rainfall, setRainfall] = useState(initialRainfall);
   const [draft, setDraft] = useState(initialRainfall);
   const [editorOpen, setEditorOpen] = useState(false);
   const [soundOn, setSoundOn] = useState(false);
+  const [axesVisible, setAxesVisible] = useState(true);
+  const [hoveredHour, setHoveredHour] = useState<number | null>(null);
   const [telemetry, setTelemetry] = useState<Telemetry>({ fps: 60, drops: 0, profile: "检测中" });
-  const peak = useMemo(() => Math.max(...rainfall), [rainfall]);
   const average = useMemo(
     () => rainfall.reduce((sum, value) => sum + value, 0) / rainfall.length,
     [rainfall],
@@ -390,6 +484,10 @@ export default function RainExperience() {
   useEffect(() => {
     audioRef.current?.setLevel(average / 12);
   }, [average]);
+
+  useEffect(() => {
+    if (axisGroupRef.current) axisGroupRef.current.visible = axesVisible;
+  }, [axesVisible]);
 
   useEffect(() => {
     return () => audioRef.current?.stop();
@@ -451,6 +549,28 @@ export default function RainExperience() {
     scene.fog = new THREE.FogExp2(0x000101, 0.038);
     const camera = new THREE.PerspectiveCamera(42, host.clientWidth / host.clientHeight, 0.1, 100);
     camera.position.set(15.8, 6.6, 17.8);
+    const controls = new OrbitControls(camera, renderer.domElement);
+    controls.target.set(-0.8, 2.2, -0.4);
+    controls.enableDamping = true;
+    controls.dampingFactor = 0.055;
+    controls.rotateSpeed = 0.48;
+    controls.zoomSpeed = 0.72;
+    controls.enablePan = false;
+    controls.minDistance = 7.5;
+    controls.maxDistance = 39;
+    controls.minPolarAngle = 0.14;
+    controls.maxPolarAngle = Math.PI / 2 - 0.035;
+    controls.autoRotate = !reducedMotion;
+    controls.autoRotateSpeed = 0.24;
+    controls.saveState();
+    const stopAutoRotate = () => {
+      controls.autoRotate = false;
+    };
+    controls.addEventListener("start", stopAutoRotate);
+    resetViewRef.current = () => {
+      controls.reset();
+      controls.autoRotate = !reducedMotion;
+    };
 
     const composer = new EffectComposer(renderer);
     composer.setPixelRatio(dpr);
@@ -495,7 +615,7 @@ export default function RainExperience() {
       },
     };
     const floor = new THREE.Mesh(
-      new THREE.PlaneGeometry(48, 22),
+      new THREE.PlaneGeometry(48, 22, 260, 120),
       new THREE.ShaderMaterial({
         vertexShader: floorVertexShader,
         fragmentShader: floorFragmentShader,
@@ -523,6 +643,8 @@ export default function RainExperience() {
     );
     scene.add(impacts);
     const axis = makeAxis(rainfall);
+    axis.visible = axesVisible;
+    axisGroupRef.current = axis;
     scene.add(axis);
 
     const updatePointerWorld = (event: PointerEvent) => {
@@ -536,6 +658,22 @@ export default function RainExperience() {
         mouseWorld.set(groundHit.x, groundHit.z);
         rainUniforms.uMouseWorld.value.copy(mouseWorld);
         floorUniforms.uMouseWorld.value.copy(mouseWorld);
+        if (
+          mouseWorld.x >= -12.7 &&
+          mouseWorld.x <= 12.7 &&
+          Math.abs(mouseWorld.y) <= 3.25
+        ) {
+          const hour = Math.max(
+            0,
+            Math.min(
+              rainfall.length - 1,
+              Math.round(((mouseWorld.x + 12.2) / 24.4) * (rainfall.length - 1)),
+            ),
+          );
+          setHoveredHour(hour);
+        } else {
+          setHoveredHour(null);
+        }
       }
     };
     const onPointer = (event: PointerEvent) => {
@@ -580,11 +718,7 @@ export default function RainExperience() {
       currentDrops += (targetDrops - currentDrops) * 0.025;
       rainGeometry.setDrawRange(0, Math.floor(currentDrops) * 2);
 
-      const drift = reducedMotion ? 0 : Math.sin(elapsed * 0.045) * 1.6;
-      camera.position.x = 15.8 + drift + pointerSmooth.x * 0.45;
-      camera.position.y = 6.6 + Math.cos(elapsed * 0.038) * 0.35 + pointerSmooth.y * 0.22;
-      camera.position.z = 17.8 + Math.sin(elapsed * 0.032) * 0.8;
-      camera.lookAt(-0.8 + drift * 0.12, 2.2, -0.4);
+      controls.update();
 
       frameCount++;
       const now = performance.now();
@@ -612,6 +746,10 @@ export default function RainExperience() {
       host.removeEventListener("pointermove", onPointer);
       host.removeEventListener("pointerdown", onPointerDown);
       window.removeEventListener("resize", onResize);
+      controls.removeEventListener("start", stopAutoRotate);
+      controls.dispose();
+      resetViewRef.current = null;
+      axisGroupRef.current = null;
       rainGeometry.dispose();
       rainMaterial.dispose();
       floor.geometry.dispose();
@@ -622,6 +760,11 @@ export default function RainExperience() {
         if (child instanceof THREE.Line) {
           child.geometry.dispose();
           child.material.dispose();
+        }
+        if (child instanceof THREE.Sprite) {
+          child.material.dispose();
+          const texture = child.userData.texture as THREE.Texture | undefined;
+          texture?.dispose();
         }
       });
       composer.dispose();
@@ -640,25 +783,12 @@ export default function RainExperience() {
       <div ref={hostRef} className="rain-canvas" aria-hidden="true" />
       <div className="vignette" aria-hidden="true" />
 
-      <section className="hero-copy">
-        <p className="eyebrow">PRECIPITATION / 24 HOURS</p>
-        <h1>降雨强度</h1>
-        <p className="subtitle">每小时降水</p>
-        <div className="reading">
-          <strong>{peak.toFixed(1)}</strong>
-          <span>毫米／小时</span>
-        </div>
-        <div className="vertical-scale" aria-hidden="true">
-          <span>{peak.toFixed(1)}</span>
-          <i />
-          <small>0</small>
-        </div>
-      </section>
-
-      <div className="timeline" aria-hidden="true">
-        {["00:00", "04:00", "08:00", "12:00", "16:00", "20:00", "24:00"].map((time) => (
-          <span key={time}>{time}</span>
-        ))}
+      <div className={`hour-readout ${hoveredHour !== null ? "visible" : ""}`}>
+        <small>
+          {hoveredHour !== null ? `${String(hoveredHour).padStart(2, "0")}:00` : "00:00"}
+        </small>
+        <strong>{hoveredHour !== null ? rainfall[hoveredHour].toFixed(1) : "0.0"}</strong>
+        <span>毫米／小时</span>
       </div>
 
       <div className="render-status">
@@ -670,7 +800,7 @@ export default function RainExperience() {
       </div>
 
       <div className="interaction-hint" aria-hidden="true">
-        移动鼠标扰动雨幕 · 点击地面激起涟漪
+        拖拽旋转 · 滚轮缩放 · 悬停读取 · 点击激起涟漪
       </div>
 
       <div className="scene-actions">
@@ -682,6 +812,17 @@ export default function RainExperience() {
         >
           <span className="sound-bars" aria-hidden="true"><i /><i /><i /></span>
           {soundOn ? "雨声 开" : "开启雨声"}
+        </button>
+        <button
+          type="button"
+          className="axis-trigger"
+          onClick={() => setAxesVisible((value) => !value)}
+          aria-pressed={axesVisible}
+        >
+          坐标 {axesVisible ? "开" : "关"}
+        </button>
+        <button type="button" className="reset-trigger" onClick={() => resetViewRef.current?.()}>
+          复位视角
         </button>
         <button
           type="button"
