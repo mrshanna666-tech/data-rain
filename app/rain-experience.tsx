@@ -68,6 +68,7 @@ const floorVertexShader = /* glsl */ `
   varying vec3 vWorld;
   varying vec2 vUv;
   varying vec3 vNormal;
+  varying float vWave;
 
   void main() {
     vec4 world = modelMatrix * vec4(position, 1.0);
@@ -77,7 +78,8 @@ const floorVertexShader = /* glsl */ `
     float down = texture2D(heightmap, uv - vec2(0.0, uTexel.y)).x;
     float up = texture2D(heightmap, uv + vec2(0.0, uTexel.y)).x;
     world.y += height;
-    vNormal = normalize(vec3((left - right) * 4.8, 1.0, (down - up) * 4.8));
+    vNormal = normalize(vec3((left - right) * 8.6, 1.0, (down - up) * 8.6));
+    vWave = abs((left + right + down + up) - height * 4.0);
     vWorld = world.xyz;
     vUv = uv;
     gl_Position = projectionMatrix * viewMatrix * world;
@@ -88,6 +90,7 @@ const floorFragmentShader = /* glsl */ `
   varying vec3 vWorld;
   varying vec2 vUv;
   varying vec3 vNormal;
+  varying float vWave;
 
   void main() {
     vec2 p = vWorld.xz;
@@ -96,8 +99,9 @@ const floorFragmentShader = /* glsl */ `
     vec3 viewDirection = normalize(cameraPosition - vWorld);
     vec3 lightDirection = normalize(vec3(-0.42, 1.0, 0.38));
     float fresnel = pow(1.0 - max(dot(normal, viewDirection), 0.0), 3.2);
-    float specular = pow(max(dot(reflect(-lightDirection, normal), viewDirection), 0.0), 46.0);
-    float slope = clamp(length(normal.xz) * 4.2, 0.0, 1.0);
+    float specular = pow(max(dot(reflect(-lightDirection, normal), viewDirection), 0.0), 78.0);
+    float slope = clamp(length(normal.xz) * 3.7, 0.0, 1.0);
+    float waveContour = smoothstep(0.0007, 0.010, vWave);
     float edgeFade = smoothstep(0.0, 0.08, vUv.x)
       * smoothstep(0.0, 0.08, 1.0 - vUv.x)
       * smoothstep(0.0, 0.12, vUv.y)
@@ -105,22 +109,17 @@ const floorFragmentShader = /* glsl */ `
     vec3 base = vec3(0.0006, 0.0011, 0.0015);
     vec3 color = base;
     color += vec3(0.018, 0.026, 0.031) * fresnel * strip;
-    color += vec3(0.18, 0.23, 0.25) * specular * strip;
-    color += vec3(0.045, 0.062, 0.070) * slope * strip;
+    color += vec3(0.25, 0.31, 0.34) * specular * strip;
+    color += vec3(0.032, 0.049, 0.056) * slope * strip;
+    color += vec3(0.026, 0.039, 0.045) * waveContour * (0.35 + slope) * strip;
     color *= edgeFade;
     gl_FragColor = vec4(color, 1.0);
   }
 `;
 
 const waterComputeShader = /* glsl */ `
-  uniform vec2 mousePos;
-  uniform float mouseStrength;
   uniform float uTime;
-  uniform float rainfall[24];
-
-  float hash(vec2 p) {
-    return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453123);
-  }
+  uniform vec4 uImpacts[16];
 
   void main() {
     vec2 cell = 1.0 / resolution.xy;
@@ -131,20 +130,19 @@ const waterComputeShader = /* glsl */ `
     float east = texture2D(heightmap, uv + vec2(cell.x, 0.0)).x;
     float west = texture2D(heightmap, uv - vec2(cell.x, 0.0)).x;
 
-    float nextHeight = ((north + south + east + west) * 0.5 - value.y) * 0.982;
+    // A second-order finite-difference wave equation. x is the present height,
+    // y is the previous height: waves propagate naturally and interfere in the buffer.
+    float nextHeight = ((north + south + east + west) * 0.5 - value.y) * 0.993;
 
     vec2 world = (uv - 0.5) * vec2(48.0, 22.0);
-    float mouseDistance = length(world - mousePos);
-    nextHeight -= exp(-mouseDistance * mouseDistance * 3.2) * mouseStrength;
-
-    int hour = int(clamp(floor(uv.x * 24.0), 0.0, 23.0));
-    float intensity = clamp(rainfall[hour] / 12.0, 0.0, 1.4);
-    float tick = floor(uTime * 22.0);
-    float seed = hash(gl_FragCoord.xy + vec2(tick, tick * 0.37));
-    float gate = step(0.70, fract(uTime * 22.0));
-    float inStrip = step(abs(world.y), 3.15);
-    float drop = step(0.9965 - intensity * 0.0018, seed) * gate * inStrip;
-    nextHeight -= drop * (0.006 + intensity * 0.009);
+    float splat = 0.0;
+    for (int i = 0; i < 16; i++) {
+      float age = uTime - uImpacts[i].z;
+      float live = step(0.0, age) * (1.0 - step(0.052, age));
+      vec2 delta = world - uImpacts[i].xy;
+      splat += exp(-dot(delta, delta) * 18.0) * uImpacts[i].w * live;
+    }
+    nextHeight -= splat;
 
     value.y = value.x;
     value.x = clamp(nextHeight, -0.18, 0.18);
@@ -198,17 +196,17 @@ function makeRainGeometry(maxDrops: number, data: number[]) {
   const lengths = new Float32Array(maxDrops * 2);
   const glows = new Float32Array(maxDrops * 2);
   const heights = new Float32Array(maxDrops * 2);
-  const total = data.reduce((sum, value) => sum + Math.max(0.08, value), 0);
-
   for (let i = 0; i < maxDrops; i++) {
-    const hour = weightedHour(data, total);
-    const x = -12.2 + (hour / (data.length - 1)) * 24.4 + (Math.random() - 0.5) * 0.82;
-    const z = (Math.random() - 0.5) * 4.6;
+    // Every hour owns a narrow column. The value controls its vertical extent;
+    // this produces the data "rain curtain" of the reference rather than a random shower.
+    const hour = i % data.length;
+    const x = -12.2 + (hour / (data.length - 1)) * 24.4 + (Math.random() - 0.5) * 0.46;
+    const z = (Math.random() - 0.5) * 2.85 + Math.sin(i * 1.73) * 0.12;
     const height = 0.18 + (data[hour] / 12) * 8.4;
-    const speed = 0.16 + Math.random() * 0.24;
+    const speed = 0.20 + Math.random() * 0.18;
     const phase = Math.random();
-    const length = 0.18 + Math.pow(Math.random(), 2.4) * 1.25;
-    const glow = Math.pow(Math.random(), 3.4);
+    const length = 0.16 + Math.pow(Math.random(), 3.0) * 0.65;
+    const glow = 0.12 + Math.pow(Math.random(), 4.0) * 0.70;
 
     for (let vertex = 0; vertex < 2; vertex++) {
       const index = i * 2 + vertex;
@@ -302,13 +300,13 @@ function makeAxis(data: number[]) {
   const lineMaterial = new THREE.LineBasicMaterial({
     color: 0xc2d0d6,
     transparent: true,
-    opacity: 0.46,
+    opacity: 0.62,
     toneMapped: false,
   });
   const faintMaterial = new THREE.LineBasicMaterial({
     color: 0xaabcc4,
     transparent: true,
-    opacity: 0.19,
+    opacity: 0.26,
     toneMapped: false,
   });
 
@@ -365,7 +363,7 @@ function makeAxis(data: number[]) {
   addLine(curve.getPoints(180), new THREE.LineBasicMaterial({
     color: 0xc2d1d8,
     transparent: true,
-    opacity: 0.28,
+    opacity: 0.38,
     toneMapped: false,
   }));
   return group;
@@ -704,7 +702,8 @@ export default function RainExperience() {
     const groundPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
     const groundHit = new THREE.Vector3();
     let lastPointerMove = -100;
-    let waterImpulse = 0;
+    let lastRainImpact = -1;
+    let impactCursor = 0;
 
     const renderer = new THREE.WebGLRenderer({
       antialias: false,
@@ -776,17 +775,19 @@ export default function RainExperience() {
     scene.add(new THREE.LineSegments(rainGeometry, rainMaterial));
 
     const waterWidth = profile.name === "ECO" ? 128 : 256;
-    const waterHeight = profile.name === "ECO" ? 32 : 64;
+    const waterHeight = profile.name === "ECO" ? 64 : 128;
     const gpuCompute = new GPUComputationRenderer(waterWidth, waterHeight, renderer);
     const initialWater = gpuCompute.createTexture();
     initialWater.image.data.fill(0);
     const heightmapVariable = gpuCompute.addVariable("heightmap", waterComputeShader, initialWater);
     gpuCompute.setVariableDependencies(heightmapVariable, [heightmapVariable]);
     const computeUniforms = heightmapVariable.material.uniforms;
-    computeUniforms.mousePos = { value: new THREE.Vector2(1000, 1000) };
-    computeUniforms.mouseStrength = { value: 0 };
     computeUniforms.uTime = { value: 0 };
-    computeUniforms.rainfall = { value: [...rainfall] };
+    const waterImpacts = Array.from(
+      { length: 16 },
+      () => new THREE.Vector4(1000, 1000, -1, 0),
+    );
+    computeUniforms.uImpacts = { value: waterImpacts };
     const computeError = gpuCompute.init();
     if (computeError) console.error(computeError);
 
@@ -806,22 +807,6 @@ export default function RainExperience() {
     floor.position.y = -0.035;
     scene.add(floor);
 
-    const impactUniforms = {
-      uTime: { value: 0 },
-      uPixelRatio: { value: dpr },
-    };
-    const impacts = new THREE.Points(
-      makeImpactGeometry(2600, rainfall),
-      new THREE.ShaderMaterial({
-        vertexShader: impactVertexShader,
-        fragmentShader: impactFragmentShader,
-        uniforms: impactUniforms,
-        transparent: true,
-        depthWrite: false,
-        blending: THREE.NormalBlending,
-      }),
-    );
-    scene.add(impacts);
     const axis = makeAxis(rainfall);
     axis.visible = axesVisible;
     axisGroupRef.current = axis;
@@ -861,7 +846,9 @@ export default function RainExperience() {
     };
     const onPointerDown = (event: PointerEvent) => {
       updatePointerWorld(event);
-      waterImpulse = 0.052;
+      const elapsed = clock.getElapsedTime();
+      waterImpacts[impactCursor].set(mouseWorld.x, mouseWorld.y, elapsed, 0.055);
+      impactCursor = (impactCursor + 1) % waterImpacts.length;
     };
     const onResize = () => {
       const width = host.clientWidth;
@@ -882,16 +869,23 @@ export default function RainExperience() {
       const elapsed = clock.getElapsedTime();
       pointerSmooth.lerp(pointer, 0.025);
       rainUniforms.uTime.value = elapsed;
-      impactUniforms.uTime.value = elapsed;
       const mouseForce = Math.max(0, 1 - (elapsed - lastPointerMove) * 0.65);
       rainUniforms.uMouseForce.value += (mouseForce - rainUniforms.uMouseForce.value) * 0.08;
       rainUniforms.uWind.value.set(
         pointerSmooth.x * 0.34 + Math.sin(elapsed * 0.17) * 0.035,
         pointerSmooth.y * 0.12,
       );
-      waterImpulse = Math.max(waterImpulse * 0.84, mouseForce * 0.0022);
-      computeUniforms.mousePos.value.copy(mouseWorld);
-      computeUniforms.mouseStrength.value = waterImpulse;
+      const rainRate = 8 + average * 2.8;
+      const rainTotal = rainfall.reduce((sum, value) => sum + Math.max(0.08, value), 0);
+      while (elapsed - lastRainImpact > 1 / rainRate) {
+        lastRainImpact += 1 / rainRate;
+        const hour = weightedHour(rainfall, rainTotal);
+        const x = -12.2 + (hour / (rainfall.length - 1)) * 24.4 + (Math.random() - 0.5) * 0.5;
+        const z = (Math.random() - 0.5) * 5.4;
+        const strength = 0.008 + Math.min(1.2, rainfall[hour] / 10) * 0.012;
+        waterImpacts[impactCursor].set(x, z, lastRainImpact, strength);
+        impactCursor = (impactCursor + 1) % waterImpacts.length;
+      }
       computeUniforms.uTime.value = elapsed;
       gpuCompute.compute();
       floorUniforms.heightmap.value = gpuCompute.getCurrentRenderTarget(heightmapVariable).texture;
@@ -936,8 +930,6 @@ export default function RainExperience() {
       gpuCompute.dispose();
       floor.geometry.dispose();
       (floor.material as THREE.Material).dispose();
-      impacts.geometry.dispose();
-      (impacts.material as THREE.Material).dispose();
       axis.traverse((child) => {
         if (child instanceof THREE.Line) {
           child.geometry.dispose();
