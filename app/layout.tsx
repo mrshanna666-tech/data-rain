@@ -22,13 +22,13 @@ export const metadata: Metadata = {
   openGraph: {
     title: "DATA RAIN",
     description: "GPU 实时降雨可视化",
-    images: ["/og.png"],
+    images: ["/og-v2.png"],
   },
   twitter: {
     card: "summary_large_image",
     title: "DATA RAIN",
     description: "GPU 实时降雨可视化",
-    images: ["/og.png"],
+    images: ["/og-v2.png"],
   },
 };
 
