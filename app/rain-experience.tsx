@@ -25,17 +25,24 @@ const rainVertexShader = /* glsl */ `
   attribute float aPhase;
   attribute float aLength;
   attribute float aGlow;
-  attribute float aHeight;
+  attribute float aHour;
+  attribute float aWidth;
+  attribute float aVertexT;
   uniform float uTime;
+  uniform float uRainfall[24];
   uniform vec2 uMouseWorld;
   uniform float uMouseForce;
   uniform vec2 uWind;
+  uniform float uLightning;
   varying float vAlpha;
   varying float vGlow;
+  varying float vTaper;
+  varying float vLightning;
 
   void main() {
     float cycle = fract(uTime * aSpeed + aPhase);
-    float y = mix(aHeight + 0.45, 0.03, cycle);
+    float height = 0.18 + (uRainfall[int(aHour)] / 12.0) * 8.4;
+    float y = mix(height + 0.45, 0.03, cycle);
     vec3 p = vec3(aOffset.x, y + position.y * aLength, aOffset.z);
     vec2 delta = p.xz - uMouseWorld;
     float distanceSq = dot(delta, delta);
@@ -43,11 +50,18 @@ const rainVertexShader = /* glsl */ `
     vec2 direction = normalize(delta + vec2(0.001));
     p.xz += direction * influence * (0.55 + cycle * 0.38);
     p.xz += uWind * (1.0 - cycle) * (0.15 + aLength * 0.16);
-    float born = smoothstep(0.0, 0.08, cycle);
-    float impact = 1.0 - smoothstep(0.88, 1.0, cycle);
+    // Tapered width: thick at leading edge (bottom), thin at trailing edge (top)
+    float taperFactor = mix(1.0, 0.08, aVertexT);
+    p.x += position.x * aWidth * taperFactor;
+    float born = smoothstep(0.0, 0.06, cycle);
+    float impact = 1.0 - smoothstep(0.90, 1.0, cycle);
     float depth = smoothstep(-2.6, 2.2, p.z);
-    vAlpha = born * impact * mix(0.055, 0.32, aGlow) * mix(0.52, 1.0, depth);
+    // Motion-blur alpha gradient: brighter at leading edge, fading toward tail
+    float motionBlur = mix(0.35, 1.0, 1.0 - aVertexT);
+    vAlpha = born * impact * mix(0.06, 0.38, aGlow) * mix(0.52, 1.0, depth) * motionBlur;
     vGlow = aGlow;
+    vTaper = aVertexT;
+    vLightning = uLightning;
     gl_Position = projectionMatrix * modelViewMatrix * vec4(p, 1.0);
   }
 `;
@@ -55,10 +69,16 @@ const rainVertexShader = /* glsl */ `
 const rainFragmentShader = /* glsl */ `
   varying float vAlpha;
   varying float vGlow;
+  varying float vTaper;
+  varying float vLightning;
   void main() {
     vec3 graphite = vec3(0.19, 0.22, 0.24);
     vec3 silver = vec3(0.52, 0.60, 0.64);
-    gl_FragColor = vec4(mix(graphite, silver, vGlow), vAlpha);
+    vec3 bright = vec3(0.78, 0.84, 0.88);
+    // Lightning illumination: flash makes drops much brighter
+    vec3 baseColor = mix(graphite, silver, vGlow);
+    vec3 litColor = mix(baseColor, bright, vLightning * 0.7);
+    gl_FragColor = vec4(litColor, vAlpha * (1.0 + vLightning * 0.4));
   }
 `;
 
@@ -87,14 +107,13 @@ const floorVertexShader = /* glsl */ `
 `;
 
 const floorFragmentShader = /* glsl */ `
+  uniform float uLightning;
   varying vec3 vWorld;
   varying vec2 vUv;
   varying vec3 vNormal;
   varying float vWave;
 
   void main() {
-    // The whole mesh is the water surface. Do not crop it to the rain curtain:
-    // energy is allowed to travel across the complete simulation field.
     float waterField = 1.0;
     vec2 p = vWorld.xz;
     vec3 normal = normalize(vNormal);
@@ -104,8 +123,6 @@ const floorFragmentShader = /* glsl */ `
     vec3 reflected = reflect(-viewDirection, normal);
     float specular = pow(max(dot(reflect(-lightDirection, normal), viewDirection), 0.0), 78.0);
     float slope = clamp(length(normal.xz) * 3.7, 0.0, 1.0);
-    // Keep the crest visible from a frontal camera too. This is derived from
-    // curvature of the simulated heightfield, not a painted ring texture.
     float waveContour = smoothstep(0.00025, 0.0035, vWave);
     float readableCrest = smoothstep(0.018, 0.09, slope);
     float edgeFade = smoothstep(0.0, 0.08, vUv.x)
@@ -122,6 +139,9 @@ const floorFragmentShader = /* glsl */ `
     color += vec3(0.032, 0.049, 0.056) * slope * waterField;
     color += vec3(0.034, 0.052, 0.060) * waveContour * (0.65 + slope) * waterField;
     color += vec3(0.018, 0.029, 0.034) * readableCrest * waterField;
+    // Lightning illumination on water surface
+    color += vec3(0.06, 0.08, 0.09) * uLightning * fresnel;
+    color += vec3(0.12, 0.14, 0.16) * uLightning * specular * 2.0;
     color *= edgeFade;
     gl_FragColor = vec4(color, 1.0);
   }
@@ -194,7 +214,57 @@ const impactFragmentShader = /* glsl */ `
   }
 `;
 
-const lightColumnVertexShader = /* glsl */ `
+// --- Splash particles: burst outward when rain drops hit the ground ---
+const splashVertexShader = /* glsl */ `
+  attribute vec3 aOrigin;
+  attribute vec3 aVelocity;
+  attribute float aBirthTime;
+  attribute float aLifespan;
+  attribute float aSize;
+  uniform float uTime;
+  uniform float uPixelRatio;
+  uniform float uLightning;
+  varying float vLife;
+  varying float vLightning;
+
+  void main() {
+    float age = uTime - aBirthTime;
+    float t = clamp(age / aLifespan, 0.0, 1.0);
+    // Dead particles: push off-screen
+    if (t >= 1.0 || age < 0.0) {
+      gl_Position = vec4(2.0, 2.0, 2.0, 1.0);
+      gl_PointSize = 0.0;
+      vLife = 0.0;
+      vLightning = 0.0;
+      return;
+    }
+    // Parabolic arc: rise then fall with gravity
+    vec3 pos = aOrigin + aVelocity * age + vec3(0.0, -4.9 * age * age, 0.0);
+    pos.y = max(0.01, pos.y);
+    vec4 mv = modelViewMatrix * vec4(pos, 1.0);
+    gl_Position = projectionMatrix * mv;
+    float fade = 1.0 - t * t;
+    gl_PointSize = max(0.5, aSize * fade * uPixelRatio * (60.0 / -mv.z));
+    vLife = fade;
+    vLightning = uLightning;
+  }
+`;
+
+const splashFragmentShader = /* glsl */ `
+  varying float vLife;
+  varying float vLightning;
+  void main() {
+    vec2 p = gl_PointCoord - 0.5;
+    float d = length(p);
+    float circle = smoothstep(0.5, 0.15, d);
+    vec3 color = mix(vec3(0.35, 0.42, 0.48), vec3(0.62, 0.70, 0.76), vLife);
+    color += vec3(0.15, 0.18, 0.20) * vLightning;
+    gl_FragColor = vec4(color, circle * vLife * 0.42);
+  }
+`;
+
+// --- Fog layer shader: subtle atmospheric depth ---
+const fogLayerVertexShader = /* glsl */ `
   varying vec2 vUv;
   void main() {
     vUv = uv;
@@ -202,14 +272,18 @@ const lightColumnVertexShader = /* glsl */ `
   }
 `;
 
-const lightColumnFragmentShader = /* glsl */ `
+const fogLayerFragmentShader = /* glsl */ `
+  uniform float uTime;
+  uniform float uLightning;
   varying vec2 vUv;
   void main() {
-    float heightFade = smoothstep(0.0, 0.14, vUv.y) * (1.0 - smoothstep(0.54, 1.0, vUv.y));
-    float halfWidth = mix(0.16, 0.72, vUv.y);
-    float across = 1.0 - smoothstep(halfWidth, halfWidth + 0.12, abs(vUv.x - 0.5));
-    float grain = 0.82 + 0.18 * sin(vUv.y * 55.0 + vUv.x * 17.0);
-    gl_FragColor = vec4(vec3(0.72, 0.78, 0.80), heightFade * across * grain * 0.17);
+    float drift = sin(vUv.x * 3.0 + uTime * 0.08) * 0.5 + 0.5;
+    float density = smoothstep(0.0, 0.5, vUv.y) * smoothstep(1.0, 0.55, vUv.y);
+    density *= 0.06 + drift * 0.03;
+    // Edge fade
+    density *= smoothstep(0.0, 0.15, vUv.x) * smoothstep(1.0, 0.85, vUv.x);
+    vec3 fogColor = vec3(0.12, 0.14, 0.16) + vec3(0.08, 0.10, 0.12) * uLightning;
+    gl_FragColor = vec4(fogColor, density);
   }
 `;
 
@@ -223,37 +297,62 @@ function weightedHour(data: number[], total: number) {
 }
 
 function makeRainGeometry(maxDrops: number, data: number[]) {
-  const positions = new Float32Array(maxDrops * 2 * 3);
-  const offsets = new Float32Array(maxDrops * 2 * 3);
-  const speeds = new Float32Array(maxDrops * 2);
-  const phases = new Float32Array(maxDrops * 2);
-  const lengths = new Float32Array(maxDrops * 2);
-  const glows = new Float32Array(maxDrops * 2);
-  const heights = new Float32Array(maxDrops * 2);
+  // Each drop is now a 4-vertex triangle strip (2 triangles) for tapered shape.
+  // Vertices: 0=top-left, 1=top-right (tail), 2=bottom-left, 3=bottom-right (head)
+  const vertsPerDrop = 4;
+  const totalVerts = maxDrops * vertsPerDrop;
+  const positions = new Float32Array(totalVerts * 3);
+  const offsets = new Float32Array(totalVerts * 3);
+  const speeds = new Float32Array(totalVerts);
+  const phases = new Float32Array(totalVerts);
+  const lengths = new Float32Array(totalVerts);
+  const glows = new Float32Array(totalVerts);
+  const hours = new Float32Array(totalVerts);
+  const widths = new Float32Array(totalVerts);
+  const vertexTs = new Float32Array(totalVerts);
+  const indices: number[] = [];
+
   for (let i = 0; i < maxDrops; i++) {
-    // Every hour owns a narrow column. The value controls its vertical extent;
-    // this produces the data "rain curtain" of the reference rather than a random shower.
     const hour = i % data.length;
     const x = -12.2 + (hour / (data.length - 1)) * 24.4 + (Math.random() - 0.5) * 0.46;
     const z = (Math.random() - 0.5) * 2.85 + Math.sin(i * 1.73) * 0.12;
-    const height = 0.18 + (data[hour] / 12) * 8.4;
     const speed = 0.20 + Math.random() * 0.18;
     const phase = Math.random();
     const length = 0.16 + Math.pow(Math.random(), 3.0) * 0.65;
     const glow = 0.12 + Math.pow(Math.random(), 4.0) * 0.70;
+    const width = 0.008 + Math.random() * 0.016;
 
-    for (let vertex = 0; vertex < 2; vertex++) {
-      const index = i * 2 + vertex;
-      const p = index * 3;
-      positions[p + 1] = -vertex;
+    const base = i * vertsPerDrop;
+    // Triangle strip: top-left(0), top-right(1), bottom-left(2), bottom-right(3)
+    // Positions in local strip space: x = side offset, y = along-drop (0=bottom/head, -1=top/tail)
+    const localData = [
+      { px: -0.5, py: -1, t: 1.0 },  // top-left (tail)
+      { px:  0.5, py: -1, t: 1.0 },  // top-right (tail)
+      { px: -0.5, py:  0, t: 0.0 },  // bottom-left (head)
+      { px:  0.5, py:  0, t: 0.0 },  // bottom-right (head)
+    ];
+
+    for (let v = 0; v < vertsPerDrop; v++) {
+      const idx = base + v;
+      const p = idx * 3;
+      positions[p] = localData[v].px;     // x: side offset for width
+      positions[p + 1] = localData[v].py; // y: along-drop
+      positions[p + 2] = 0;
       offsets[p] = x;
+      offsets[p + 1] = 0;
       offsets[p + 2] = z;
-      speeds[index] = speed;
-      phases[index] = phase;
-      lengths[index] = length;
-      glows[index] = glow;
-      heights[index] = height;
+      speeds[idx] = speed;
+      phases[idx] = phase;
+      lengths[idx] = length;
+      glows[idx] = glow;
+      hours[idx] = hour;
+      widths[idx] = width;
+      vertexTs[idx] = localData[v].t;
     }
+
+    // Two triangles: (0,2,1), (1,2,3)
+    indices.push(base, base + 2, base + 1);
+    indices.push(base + 1, base + 2, base + 3);
   }
 
   const geometry = new THREE.BufferGeometry();
@@ -263,7 +362,10 @@ function makeRainGeometry(maxDrops: number, data: number[]) {
   geometry.setAttribute("aPhase", new THREE.BufferAttribute(phases, 1));
   geometry.setAttribute("aLength", new THREE.BufferAttribute(lengths, 1));
   geometry.setAttribute("aGlow", new THREE.BufferAttribute(glows, 1));
-  geometry.setAttribute("aHeight", new THREE.BufferAttribute(heights, 1));
+  geometry.setAttribute("aHour", new THREE.BufferAttribute(hours, 1));
+  geometry.setAttribute("aWidth", new THREE.BufferAttribute(widths, 1));
+  geometry.setAttribute("aVertexT", new THREE.BufferAttribute(vertexTs, 1));
+  geometry.setIndex(indices);
   return geometry;
 }
 
@@ -329,7 +431,7 @@ function makeTextSprite(
   return sprite;
 }
 
-function makeAxis(data: number[]) {
+function makeAxis() {
   const group = new THREE.Group();
   const lineMaterial = new THREE.LineBasicMaterial({
     color: 0xf1f7fa,
@@ -499,16 +601,13 @@ function createRainAudio(): RainAudioController {
 function RainCurveEditor({
   values,
   onChange,
-  onCommit,
 }: {
   values: number[];
   onChange: (values: number[]) => void;
-  onCommit: (values: number[]) => void;
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const activeRef = useRef<number | null>(null);
   const valuesRef = useRef(values);
-  valuesRef.current = values;
   const maxValue = 14;
 
   const draw = () => {
@@ -601,6 +700,7 @@ function RainCurveEditor({
   };
 
   useEffect(() => {
+    valuesRef.current = values;
     draw();
     const observer = new ResizeObserver(draw);
     if (canvasRef.current) observer.observe(canvasRef.current);
@@ -648,14 +748,13 @@ function RainCurveEditor({
         updateFromPointer(event);
         event.currentTarget.releasePointerCapture(event.pointerId);
         activeRef.current = null;
-        onCommit(valuesRef.current);
       }}
       onPointerCancel={(event) => {
         activeRef.current = null;
         if (event.currentTarget.hasPointerCapture(event.pointerId)) {
           event.currentTarget.releasePointerCapture(event.pointerId);
         }
-        onCommit(valuesRef.current);
+        draw();
       }}
     />
   );
@@ -667,9 +766,9 @@ export default function RainExperience() {
   const soundWantedRef = useRef(true);
   const axisGroupRef = useRef<THREE.Group | null>(null);
   const resetViewRef = useRef<(() => void) | null>(null);
-  const viewStateRef = useRef<{ position: number[]; target: number[]; autoRotate: boolean } | null>(null);
+  const updateRainfallRef = useRef<((data: number[]) => void) | null>(null);
+  const rainfallRef = useRef(initialRainfall);
   const [rainfall, setRainfall] = useState(initialRainfall);
-  const [draft, setDraft] = useState(initialRainfall);
   const [editorOpen, setEditorOpen] = useState(false);
   const [numbersOpen, setNumbersOpen] = useState(false);
   const [soundOn, setSoundOn] = useState(false);
@@ -701,7 +800,8 @@ export default function RainExperience() {
       if ((event.target as Element | null)?.closest(".sound-trigger")) return;
       if (!audioRef.current) {
         audioRef.current = createRainAudio();
-        audioRef.current.setLevel(average / 12);
+        const data = rainfallRef.current;
+        audioRef.current.setLevel(data.reduce((sum, value) => sum + value, 0) / data.length / 12);
       }
       await audioRef.current.context.resume();
       setSoundOn(true);
@@ -738,7 +838,7 @@ export default function RainExperience() {
     if (!host) return;
 
     const profile = selectProfile();
-    const savedView = viewStateRef.current;
+    const data = rainfallRef.current;
     const maxDrops = 56000;
     let targetDrops = profile.drops;
     let currentDrops = profile.drops;
@@ -788,12 +888,6 @@ export default function RainExperience() {
     controls.autoRotate = !reducedMotion;
     controls.autoRotateSpeed = 0.24;
     controls.saveState();
-    if (savedView) {
-      camera.position.fromArray(savedView.position);
-      controls.target.fromArray(savedView.target);
-      controls.autoRotate = savedView.autoRotate;
-      controls.update();
-    }
     const stopAutoRotate = () => {
       controls.autoRotate = false;
     };
@@ -814,14 +908,22 @@ export default function RainExperience() {
     );
     composer.addPass(bloom);
 
+    // --- Lightning state ---
+    let lightningIntensity = 0;
+    let lightningTarget = 0;
+    let nextLightningTime = 5 + Math.random() * 12;
+
     const rainUniforms = {
       uTime: { value: 0 },
+      uRainfall: { value: new Float32Array(data) },
       uMouseWorld: { value: mouseWorld.clone() },
       uMouseForce: { value: 0 },
       uWind: { value: new THREE.Vector2() },
+      uLightning: { value: 0 },
     };
-    const rainGeometry = makeRainGeometry(maxDrops, rainfall);
-    rainGeometry.setDrawRange(0, currentDrops * 2);
+    const rainGeometry = makeRainGeometry(maxDrops, data);
+    // 6 indices per drop (2 triangles)
+    rainGeometry.setDrawRange(0, currentDrops * 6);
     const rainMaterial = new THREE.ShaderMaterial({
       vertexShader: rainVertexShader,
       fragmentShader: rainFragmentShader,
@@ -829,14 +931,138 @@ export default function RainExperience() {
       transparent: true,
       depthWrite: false,
       blending: THREE.NormalBlending,
+      side: THREE.DoubleSide,
     });
-    scene.add(new THREE.LineSegments(rainGeometry, rainMaterial));
+    scene.add(new THREE.Mesh(rainGeometry, rainMaterial));
+
+    // --- Splash particle system ---
+    const maxSplashParticles = 2000;
+    const splashPositions = new Float32Array(maxSplashParticles * 3);
+    const splashOrigins = new Float32Array(maxSplashParticles * 3);
+    const splashVelocities = new Float32Array(maxSplashParticles * 3);
+    const splashBirthTimes = new Float32Array(maxSplashParticles).fill(-100);
+    const splashLifespans = new Float32Array(maxSplashParticles).fill(0.3);
+    const splashSizes = new Float32Array(maxSplashParticles).fill(1);
+    let splashCursor = 0;
+
+    const splashGeometry = new THREE.BufferGeometry();
+    splashGeometry.setAttribute("position", new THREE.BufferAttribute(splashPositions, 3));
+    splashGeometry.setAttribute("aOrigin", new THREE.BufferAttribute(splashOrigins, 3));
+    splashGeometry.setAttribute("aVelocity", new THREE.BufferAttribute(splashVelocities, 3));
+    splashGeometry.setAttribute("aBirthTime", new THREE.BufferAttribute(splashBirthTimes, 1));
+    splashGeometry.setAttribute("aLifespan", new THREE.BufferAttribute(splashLifespans, 1));
+    splashGeometry.setAttribute("aSize", new THREE.BufferAttribute(splashSizes, 1));
+
+    const splashUniforms = {
+      uTime: { value: 0 },
+      uPixelRatio: { value: dpr },
+      uLightning: { value: 0 },
+    };
+    const splashMaterial = new THREE.ShaderMaterial({
+      vertexShader: splashVertexShader,
+      fragmentShader: splashFragmentShader,
+      uniforms: splashUniforms,
+      transparent: true,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+    });
+    const splashMesh = new THREE.Points(splashGeometry, splashMaterial);
+    scene.add(splashMesh);
+
+    const emitSplash = (x: number, z: number, time: number, intensity: number) => {
+      const count = 3 + Math.floor(intensity * 5);
+      for (let i = 0; i < count; i++) {
+        const idx = splashCursor;
+        splashCursor = (splashCursor + 1) % maxSplashParticles;
+        const angle = Math.random() * Math.PI * 2;
+        const speed = 0.3 + Math.random() * 0.8 * intensity;
+        const p = idx * 3;
+        splashOrigins[p] = x + (Math.random() - 0.5) * 0.05;
+        splashOrigins[p + 1] = 0.02;
+        splashOrigins[p + 2] = z + (Math.random() - 0.5) * 0.05;
+        splashVelocities[p] = Math.cos(angle) * speed;
+        splashVelocities[p + 1] = 1.2 + Math.random() * 1.5 * intensity;
+        splashVelocities[p + 2] = Math.sin(angle) * speed;
+        splashBirthTimes[idx] = time;
+        splashLifespans[idx] = 0.15 + Math.random() * 0.25;
+        splashSizes[idx] = 0.8 + Math.random() * 1.5;
+      }
+      (splashGeometry.attributes.aOrigin as THREE.BufferAttribute).needsUpdate = true;
+      (splashGeometry.attributes.aVelocity as THREE.BufferAttribute).needsUpdate = true;
+      (splashGeometry.attributes.aBirthTime as THREE.BufferAttribute).needsUpdate = true;
+      (splashGeometry.attributes.aLifespan as THREE.BufferAttribute).needsUpdate = true;
+      (splashGeometry.attributes.aSize as THREE.BufferAttribute).needsUpdate = true;
+    };
+
+    // --- Atmospheric fog layers ---
+    const fogLayerMaterial = new THREE.ShaderMaterial({
+      vertexShader: fogLayerVertexShader,
+      fragmentShader: fogLayerFragmentShader,
+      uniforms: {
+        uTime: { value: 0 },
+        uLightning: { value: 0 },
+      },
+      transparent: true,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+      blending: THREE.NormalBlending,
+    });
+    const fogLayers: THREE.Mesh[] = [];
+    const fogPositions = [
+      { y: 0.3, z: -3, scaleX: 52, scaleY: 2.8, rotX: -0.12 },
+      { y: 1.5, z: 4, scaleX: 48, scaleY: 3.5, rotX: 0.08 },
+      { y: 0.1, z: -8, scaleX: 55, scaleY: 2.2, rotX: -0.05 },
+    ];
+    for (const fp of fogPositions) {
+      const fog = new THREE.Mesh(
+        new THREE.PlaneGeometry(1, 1),
+        fogLayerMaterial,
+      );
+      fog.position.set(0, fp.y, fp.z);
+      fog.scale.set(fp.scaleX, fp.scaleY, 1);
+      fog.rotation.x = fp.rotX;
+      fog.renderOrder = 2;
+      scene.add(fog);
+      fogLayers.push(fog);
+    }
+
+    // --- Sky dome: dark gradient hemisphere ---
+    const skyGeometry = new THREE.SphereGeometry(45, 32, 16, 0, Math.PI * 2, 0, Math.PI / 2);
+    const skyMaterial = new THREE.ShaderMaterial({
+      vertexShader: `
+        varying vec3 vWorldPosition;
+        void main() {
+          vec4 worldPos = modelMatrix * vec4(position, 1.0);
+          vWorldPosition = worldPos.xyz;
+          gl_Position = projectionMatrix * viewMatrix * worldPos;
+        }
+      `,
+      fragmentShader: `
+        uniform float uLightning;
+        varying vec3 vWorldPosition;
+        void main() {
+          float h = normalize(vWorldPosition).y;
+          vec3 low = vec3(0.003, 0.006, 0.010);
+          vec3 high = vec3(0.015, 0.022, 0.032);
+          vec3 color = mix(low, high, smoothstep(0.0, 0.6, h));
+          // Lightning flash in sky
+          color += vec3(0.04, 0.055, 0.07) * uLightning * smoothstep(0.1, 0.5, h);
+          gl_FragColor = vec4(color, 1.0);
+        }
+      `,
+      uniforms: { uLightning: { value: 0 } },
+      side: THREE.BackSide,
+      depthWrite: false,
+    });
+    const sky = new THREE.Mesh(skyGeometry, skyMaterial);
+    sky.renderOrder = -1;
+    scene.add(sky);
 
     const waterWidth = profile.name === "ECO" ? 128 : 256;
     const waterHeight = profile.name === "ECO" ? 64 : 128;
     const gpuCompute = new GPUComputationRenderer(waterWidth, waterHeight, renderer);
     const initialWater = gpuCompute.createTexture();
-    initialWater.image.data.fill(0);
+    initialWater.image.data!.fill(0);
     const heightmapVariable = gpuCompute.addVariable("heightmap", waterComputeShader, initialWater);
     gpuCompute.setVariableDependencies(heightmapVariable, [heightmapVariable]);
     const computeUniforms = heightmapVariable.material.uniforms;
@@ -852,6 +1078,7 @@ export default function RainExperience() {
     const floorUniforms = {
       heightmap: { value: gpuCompute.getCurrentRenderTarget(heightmapVariable).texture },
       uTexel: { value: new THREE.Vector2(1 / waterWidth, 1 / waterHeight) },
+      uLightning: { value: 0 },
     };
     const floor = new THREE.Mesh(
       new THREE.PlaneGeometry(48, 22, waterWidth - 1, waterHeight - 1),
@@ -865,35 +1092,22 @@ export default function RainExperience() {
     floor.position.y = -0.035;
     scene.add(floor);
 
-    // The three strongest rainfall columns receive silver volumetric light.
-    // Their positions, height and spread are regenerated from edited data.
-    const lightColumnGeometry = new THREE.PlaneGeometry(1, 1, 1, 8);
-    const lightColumnMaterial = new THREE.ShaderMaterial({
-      vertexShader: lightColumnVertexShader,
-      fragmentShader: lightColumnFragmentShader,
-      transparent: true,
-      depthWrite: false,
-      depthTest: false,
-      blending: THREE.AdditiveBlending,
-      side: THREE.DoubleSide,
-    });
-    const lightColumns = rainfall
-      .map((value, hour) => ({ value, hour }))
-      .sort((a, b) => b.value - a.value)
-      .slice(0, 3)
-      .map(({ value, hour }) => {
-        const x = -12.2 + (hour / (rainfall.length - 1)) * 24.4;
-        const height = 1.1 + (value / 12) * 6.6;
-        const column = new THREE.Mesh(lightColumnGeometry, lightColumnMaterial);
-        column.position.set(x, height * 0.5, 0.18);
-        column.scale.set(0.55 + (value / 12) * 1.15, height, 1);
-        column.renderOrder = 1;
-        scene.add(column);
-        return column;
-      });
+    let rainData = data;
+    let rainRate = 0;
+    let rainTotal = 0;
+    const updateRainfall = (next: number[]) => {
+      rainData = next;
+      // Only upload 24 values; keep particle buffers, camera and water history alive.
+      rainUniforms.uRainfall.value.set(next);
+      const mean = next.reduce((sum, value) => sum + value, 0) / next.length;
+      rainRate = 1.7 + mean * 0.28;
+      rainTotal = next.reduce((sum, value) => sum + Math.max(0.08, value), 0);
+    };
+    updateRainfallRef.current = updateRainfall;
+    updateRainfall(data);
 
-    const axis = makeAxis(rainfall);
-    axis.visible = axesVisible;
+    const axis = makeAxis();
+    axis.visible = false;
     axisGroupRef.current = axis;
     scene.add(axis);
 
@@ -915,8 +1129,8 @@ export default function RainExperience() {
           const hour = Math.max(
             0,
             Math.min(
-              rainfall.length - 1,
-              Math.round(((mouseWorld.x + 12.2) / 24.4) * (rainfall.length - 1)),
+              rainData.length - 1,
+              Math.round(((mouseWorld.x + 12.2) / 24.4) * (rainData.length - 1)),
             ),
           );
           setHoveredHour(hour);
@@ -960,25 +1174,49 @@ export default function RainExperience() {
         pointerSmooth.x * 0.34 + Math.sin(elapsed * 0.17) * 0.035,
         pointerSmooth.y * 0.12,
       );
-      const rainRate = 1.7 + average * 0.28;
-      const rainTotal = rainfall.reduce((sum, value) => sum + Math.max(0.08, value), 0);
+
+      // --- Lightning update ---
+      if (elapsed > nextLightningTime) {
+        lightningTarget = 0.6 + Math.random() * 0.4;
+        // Schedule double-flash occasionally
+        const doubleFlash = Math.random() < 0.3;
+        nextLightningTime = elapsed + (doubleFlash ? 0.08 : (4 + Math.random() * 14));
+        if (doubleFlash) lightningTarget *= 0.7;
+      }
+      lightningIntensity += (lightningTarget - lightningIntensity) * 0.3;
+      lightningTarget *= 0.88; // rapid decay
+      if (lightningTarget < 0.01) lightningTarget = 0;
+      rainUniforms.uLightning.value = lightningIntensity;
+      splashUniforms.uLightning.value = lightningIntensity;
+      splashUniforms.uTime.value = elapsed;
+      floorUniforms.uLightning.value = lightningIntensity;
+      fogLayerMaterial.uniforms.uTime.value = elapsed;
+      fogLayerMaterial.uniforms.uLightning.value = lightningIntensity;
+      (skyMaterial.uniforms.uLightning as { value: number }).value = lightningIntensity;
+      // Adjust tone mapping exposure during lightning
+      renderer.toneMappingExposure = 0.28 + lightningIntensity * 0.15;
+
       while (elapsed - lastRainImpact > 1 / rainRate) {
         lastRainImpact += 1 / rainRate;
-        const hour = weightedHour(rainfall, rainTotal);
-        const x = -12.2 + (hour / (rainfall.length - 1)) * 24.4 + (Math.random() - 0.5) * 0.5;
-        // The rain field is a whole water plane, not just a thin strip beneath
-        // the data curtain: every hour contributes impacts across its depth.
+        const hour = weightedHour(rainData, rainTotal);
+        const x = -12.2 + (hour / (rainData.length - 1)) * 24.4 + (Math.random() - 0.5) * 0.5;
         const z = (Math.random() - 0.5) * 20.0;
-        const strength = 0.009 + Math.min(1.2, rainfall[hour] / 10) * 0.012;
+        const strength = 0.009 + Math.min(1.2, rainData[hour] / 10) * 0.012;
         waterImpacts[impactCursor].set(x, z, lastRainImpact, strength);
         impactCursor = (impactCursor + 1) % waterImpacts.length;
+        // Emit splash particles at impact point
+        const splashIntensity = Math.min(1, rainData[hour] / 8);
+        if (Math.abs(z) < 11 && Math.abs(x) < 13) {
+          emitSplash(x, z, lastRainImpact, splashIntensity);
+        }
       }
       computeUniforms.uTime.value = elapsed;
       gpuCompute.compute();
       floorUniforms.heightmap.value = gpuCompute.getCurrentRenderTarget(heightmapVariable).texture;
 
       currentDrops += (targetDrops - currentDrops) * 0.025;
-      rainGeometry.setDrawRange(0, Math.floor(currentDrops) * 2);
+      // 6 indices per drop (2 triangles × 3 verts)
+      rainGeometry.setDrawRange(0, Math.floor(currentDrops) * 6);
 
       controls.update();
 
@@ -1009,22 +1247,23 @@ export default function RainExperience() {
       host.removeEventListener("pointerdown", onPointerDown);
       window.removeEventListener("resize", onResize);
       controls.removeEventListener("start", stopAutoRotate);
-      viewStateRef.current = {
-        position: camera.position.toArray(),
-        target: controls.target.toArray(),
-        autoRotate: controls.autoRotate,
-      };
       controls.dispose();
       resetViewRef.current = null;
+      updateRainfallRef.current = null;
       axisGroupRef.current = null;
       rainGeometry.dispose();
       rainMaterial.dispose();
+      splashGeometry.dispose();
+      splashMaterial.dispose();
+      scene.remove(splashMesh);
+      fogLayers.forEach((f) => { scene.remove(f); f.geometry.dispose(); });
+      fogLayerMaterial.dispose();
+      scene.remove(sky);
+      skyGeometry.dispose();
+      skyMaterial.dispose();
       gpuCompute.dispose();
       floor.geometry.dispose();
       (floor.material as THREE.Material).dispose();
-      lightColumns.forEach((column) => scene.remove(column));
-      lightColumnGeometry.dispose();
-      lightColumnMaterial.dispose();
       axis.traverse((child) => {
         if (child instanceof THREE.Line) {
           child.geometry.dispose();
@@ -1040,6 +1279,11 @@ export default function RainExperience() {
       renderer.dispose();
       renderer.domElement.remove();
     };
+  }, []);
+
+  useEffect(() => {
+    rainfallRef.current = rainfall;
+    updateRainfallRef.current?.(rainfall);
   }, [rainfall]);
 
   return (
@@ -1100,15 +1344,14 @@ export default function RainExperience() {
           </div>
           <button type="button" onClick={() => setEditorOpen(false)} aria-label="关闭编辑器">×</button>
         </div>
-        <p>直接拖动曲线上的控制点。松开后，雨幕高度、密度和水面落点会立即更新。</p>
+        <p>直接拖动曲线上的控制点，雨幕高度和水面落点会随拖动实时变化。</p>
         <RainCurveEditor
-          values={draft}
-          onChange={setDraft}
-          onCommit={(next) => setRainfall(next)}
+          values={rainfall}
+          onChange={setRainfall}
         />
         <div className="curve-stats">
-          <span>峰值 <b>{Math.max(...draft).toFixed(1)}</b> mm/h</span>
-          <span>均值 <b>{(draft.reduce((sum, value) => sum + value, 0) / draft.length).toFixed(1)}</b> mm/h</span>
+          <span>峰值 <b>{Math.max(...rainfall).toFixed(1)}</b> mm/h</span>
+          <span>均值 <b>{average.toFixed(1)}</b> mm/h</span>
         </div>
         <button
           type="button"
@@ -1120,7 +1363,7 @@ export default function RainExperience() {
         </button>
         {numbersOpen && (
           <div className="data-grid" aria-label="逐小时降雨数值">
-            {draft.map((value, index) => (
+            {rainfall.map((value, index) => (
               <label key={index}>
                 <span>{String(index).padStart(2, "0")}:00</span>
                 <input
@@ -1130,11 +1373,10 @@ export default function RainExperience() {
                   step="0.1"
                   value={value}
                   onChange={(event) => {
-                    const next = [...draft];
+                    const next = [...rainfall];
                     next[index] = Math.min(14, Math.max(0, Number(event.target.value)));
-                    setDraft(next);
+                    setRainfall(next);
                   }}
-                  onBlur={() => setRainfall(draft)}
                   aria-label={`${String(index).padStart(2, "0")}:00 降雨量`}
                 />
               </label>
@@ -1144,10 +1386,7 @@ export default function RainExperience() {
         <button
           type="button"
           className="apply-data"
-          onClick={() => {
-            setDraft(initialRainfall);
-            setRainfall(initialRainfall);
-          }}
+          onClick={() => setRainfall(initialRainfall)}
         >
           恢复示例曲线
         </button>
